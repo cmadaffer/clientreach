@@ -1,3 +1,5 @@
+// pages/api/auth/[...nextauth].js
+
 import NextAuth from "next-auth";
 import GoogleProvider from "next-auth/providers/google";
 
@@ -8,24 +10,16 @@ export default NextAuth({
       clientSecret: process.env.GOOGLE_CLIENT_SECRET,
       authorization: {
         params: {
-          scope: "openid email profile https://www.googleapis.com/auth/contacts.readonly",
-        },
-      },
+          scope: [
+            "openid",
+            "email",
+            "profile",
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/contacts.readonly"
+          ].join(" ")
+        }
+      }
     }),
   ],
   secret: process.env.NEXTAUTH_SECRET,
-  callbacks: {
-    async jwt({ token, account }) {
-      // Add access token to the JWT
-      if (account) {
-        token.accessToken = account.access_token;
-      }
-      return token;
-    },
-    async session({ session, token }) {
-      // Make access token available in the session
-      session.accessToken = token.accessToken;
-      return session;
-    },
-  },
 });
