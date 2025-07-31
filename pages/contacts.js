@@ -1,54 +1,62 @@
-import { useSession } from "next-auth/react";
 import { useEffect, useState } from "react";
-import { useRouter } from "next/router";
 
 export default function ContactsPage() {
-  const { data: session, status } = useSession();
-  const router = useRouter();
   const [contacts, setContacts] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
   useEffect(() => {
-    if (status === "unauthenticated") {
-      router.push("/");
-    }
-  }, [status, router]);
+    const fetchContacts = async () => {
+      try {
+        const res = await fetch("/api/contacts");
+        const data = await res.json();
+        if (res.ok) {
+          setContacts(data.contacts || []);
+        } else {
+          setError(data.error || "Error fetching contacts");
+        }
+      } catch (err) {
+        setError("Unexpected error");
+      } finally {
+        setLoading(false);
+      }
+    };
 
-  useEffect(() => {
-    // Replace with fake clients for now
-    const fakeContacts = [
-      { id: 1, first_name: "John", last_name: "Doe", email: "john.doe@example.com", company: "Doe Inc." },
-      { id: 2, first_name: "Jane", last_name: "Smith", email: "jane.smith@example.com", company: "Smith Consulting" },
-      { id: 3, first_name: "Michael", last_name: "Johnson", email: "m.johnson@example.com", company: "Johnson LLC" },
-    ];
-    setContacts(fakeContacts);
-    setLoading(false);
+    fetchContacts();
   }, []);
 
-  if (loading) return <div className="text-center text-gray-500 mt-10">Loading contacts...</div>;
-
   return (
-    <div className="min-h-screen bg-gray-100 py-12 px-6 sm:px-12">
-      <h1 className="text-3xl font-bold text-gray-800 mb-6">🧾 Your FreshBooks Clients</h1>
+    <div className="min-h-screen bg-gray-50 px-6 py-10">
+      <div className="max-w-6xl mx-auto">
+        <h1 className="text-3xl font-bold mb-6 text-gray-800">Client Contacts</h1>
 
-      {contacts.length === 0 ? (
-        <p className="text-gray-600">No contacts found.</p>
-      ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-          {contacts.map((contact) => (
-            <div
-              key={contact.id}
-              className="bg-white rounded-2xl shadow-md p-6 border border-gray-200 hover:shadow-lg transition-all"
-            >
-              <h2 className="text-xl font-semibold text-gray-800">
-                {contact.first_name} {contact.last_name}
-              </h2>
-              <p className="text-gray-600">{contact.company}</p>
-              <p className="text-gray-500 text-sm mt-1">{contact.email}</p>
-            </div>
-          ))}
-        </div>
-      )}
+        {loading ? (
+          <div className="text-gray-600">Loading...</div>
+        ) : error ? (
+          <div className="text-red-600">{error}</div>
+        ) : contacts.length === 0 ? (
+          <div className="text-gray-500">No contacts found.</div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+            {contacts.map((contact) => (
+              <div
+                key={contact.id || contact.userid}
+                className="bg-white p-5 rounded-2xl shadow-sm border border-gray-200 hover:shadow-md transition"
+              >
+                <h2 className="text-lg font-semibold text-gray-900">
+                  {contact.organization || `${contact.first_name} ${contact.last_name}`}
+                </h2>
+                <p className="text-sm text-gray-600">
+                  {contact.email || "No email"}
+                </p>
+                <p className="text-sm text-gray-500 mt-1">
+                  ID: {contact.id || contact.userid}
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
