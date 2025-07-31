@@ -1,12 +1,11 @@
-// File: pages/api/auth/freshbooks-auth.js
-import { v4 as uuidv4 } from 'uuid';
-
+// pages/api/auth/freshbooks-callback.js
 export default async function handler(req, res) {
-  const state = uuidv4();
-  const clientId = process.env.FRESHBOOKS_CLIENT_ID;
-  const redirectUri = process.env.FRESHBOOKS_REDIRECT_URI;
+  const code = req.query.code;
 
-  const authUrl = `https://auth.freshbooks.com/oauth/authorize?client_id=${clientId}&response_type=code&redirect_uri=${redirectUri}&state=${state}&scope=admin:all`;
+  if (!code) {
+    return res.status(400).json({ error: 'Authorization code not provided' });
+  }
 
-  res.redirect(authUrl);
+  // Placeholder for now until we have client ID/secret
+  res.status(200).json({ message: 'FreshBooks auth callback received', code });
 }
