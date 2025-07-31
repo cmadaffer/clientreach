@@ -1,6 +1,5 @@
 // pages/api/auth/freshbooks/callback.js
 import { createClient } from '@supabase/supabase-js';
-import axios from 'axios';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -8,40 +7,54 @@ const supabase = createClient(
 );
 
 export default async function handler(req, res) {
+  const { code } = req.query;
+
+  if (!code) {
+    return res.status(400).json({ error: 'Authorization code missing' });
+  }
+
   try {
-    const { code } = req.query;
+    const redirect_uri = 'https://clientreach.onrender.com/api/auth/freshbooks/callback';
 
-    if (!code) {
-      return res.status(400).json({ error: 'Authorization code missing' });
-    }
-
-    const tokenRes = await axios.post('https://api.freshbooks.com/auth/oauth/token', {
-      grant_type: 'authorization_code',
-      client_id: process.env.FRESHBOOKS_CLIENT_ID,
-      client_secret: process.env.FRESHBOOKS_CLIENT_SECRET,
-      code,
-      redirect_uri: process.env.FRESHBOOKS_REDIRECT_URI,
-    }, {
-      headers: { 'Content-Type': 'application/json' },
+    const tokenRes = await fetch('https://api.freshbooks.com/auth/oauth/token', {
+      method: 'POST',
+      headers: {
+        Authorization:
+          'Basic ' +
+          Buffer.from(
+            `${process.env.FRESHBOOKS_CLIENT_ID}:${process.env.FRESHBOOKS_CLIENT_SECRET}`
+          ).toString('base64'),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri,
+      }),
     });
 
-    const { access_token, refresh_token, expires_in } = tokenRes.data;
+    const tokenData = await tokenRes.json();
 
-    // Save tokens to Supabase
-    const { error } = await supabase
-      .from('tokens')
-      .insert([{ access_token, refresh_token, expires_in }]);
-
-    if (error) {
-      console.error('Supabase insert error:', error);
-      return res.status(500).json({ error: 'Failed to save tokens' });
+    if (!tokenRes.ok) {
+      console.error('Token exchange failed:', tokenData);
+      return res.status(500).json({ error: 'Token exchange failed', detail: tokenData });
     }
 
-    // Redirect to /contacts
-    res.redirect('/contacts');
+    // Store in Supabase
+    await supabase.from('freshbooks_tokens').insert([
+      {
+        access_token: tokenData.access_token,
+        refresh_token: tokenData.refresh_token,
+        expires_in: tokenData.expires_in,
+        token_type: tokenData.token_type,
+        created_at: new Date().toISOString(),
+      },
+    ]);
+
+    return res.redirect('/contacts');
   } catch (err) {
-    console.error('Callback handler error:', err.response?.data || err.message);
-    res.status(500).json({ error: 'Callback error' });
+    console.error('Callback error:', err);
+    return res.status(500).json({ error: 'Callback error' });
   }
 }
 
