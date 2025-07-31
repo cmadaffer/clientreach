@@ -1,65 +1,61 @@
-// pages/contacts.js
-
 import { useEffect, useState } from "react";
+import { useSession } from "next-auth/react";
+import { useRouter } from "next/router";
 
 export default function ContactsPage() {
+  const { data: session, status } = useSession();
+  const router = useRouter();
   const [contacts, setContacts] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (status === "unauthenticated") {
+      router.push("/");
+    }
+  }, [status]);
 
   useEffect(() => {
     const fetchContacts = async () => {
       try {
         const res = await fetch("/api/contacts");
         const data = await res.json();
-
-        if (!res.ok) throw new Error(data.error || "Failed to load contacts");
-
-        setContacts(data.contacts);
+        setContacts(data.contacts || []);
       } catch (err) {
-        setError(err.message);
+        console.error("Failed to load contacts", err);
       } finally {
         setLoading(false);
       }
     };
 
-    fetchContacts();
-  }, []);
+    if (status === "authenticated") {
+      fetchContacts();
+    }
+  }, [status]);
+
+  if (loading) {
+    return <div className="text-center text-xl mt-20">Loading contacts...</div>;
+  }
 
   return (
-    <div className="min-h-screen bg-gray-50 p-8">
-      <div className="max-w-4xl mx-auto">
-        <h1 className="text-4xl font-bold text-gray-800 mb-6 text-center">
-          🧾 FreshBooks Contacts
-        </h1>
-
-        {loading ? (
-          <div className="text-center text-gray-500 text-xl">Loading...</div>
-        ) : error ? (
-          <div className="text-red-500 text-center text-lg">{error}</div>
-        ) : contacts.length === 0 ? (
-          <div className="text-center text-gray-400">No contacts found.</div>
-        ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {contacts.map((contact) => (
-              <div
-                key={contact.id}
-                className="bg-white rounded-2xl shadow p-4 border hover:shadow-md transition"
-              >
-                <h2 className="text-lg font-semibold text-gray-800">
-                  {contact.first_name} {contact.last_name}
-                </h2>
-                <p className="text-sm text-gray-500">
-                  {contact.email || "No email"}
-                </p>
-                <p className="text-sm text-gray-400">
-                  {contact.organization || "No company"}
-                </p>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+    <div className="min-h-screen bg-gray-50 px-6 py-10">
+      <h1 className="text-3xl font-bold text-center mb-8 text-gray-800">Your FreshBooks Clients</h1>
+      {contacts.length === 0 ? (
+        <div className="text-center text-gray-500">No contacts found.</div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+          {contacts.map((contact) => (
+            <div
+              key={contact.id}
+              className="bg-white rounded-2xl shadow-md p-6 hover:shadow-lg transition-all duration-300"
+            >
+              <h2 className="text-xl font-semibold text-gray-800">{contact.organization || "No Company"}</h2>
+              <p className="text-gray-600">{contact.first_name} {contact.last_name}</p>
+              <p className="text-gray-500 text-sm mt-2">{contact.email || "No email provided"}</p>
+              <p className="text-gray-400 text-xs mt-1">Client ID: {contact.id}</p>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
