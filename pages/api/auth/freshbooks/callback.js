@@ -1,5 +1,4 @@
 // pages/api/auth/freshbooks/callback.js
-
 import { createClient } from '@supabase/supabase-js';
 
 const supabase = createClient(
@@ -15,51 +14,45 @@ export default async function handler(req, res) {
   }
 
   try {
+    const params = new URLSearchParams();
+    params.append('grant_type', 'authorization_code');
+    params.append('client_id', process.env.FRESHBOOKS_CLIENT_ID);
+    params.append('client_secret', process.env.FRESHBOOKS_CLIENT_SECRET);
+    params.append('code', code);
+    params.append('redirect_uri', 'https://clientreach.onrender.com/api/auth/freshbooks/callback');
+
     const tokenRes = await fetch('https://api.freshbooks.com/auth/oauth/token', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Api-Version': 'alpha',
-      },
-      body: JSON.stringify({
-        grant_type: 'authorization_code',
-        client_id: process.env.FRESHBOOKS_CLIENT_ID,
-        client_secret: process.env.FRESHBOOKS_CLIENT_SECRET,
-        code,
-        redirect_uri: process.env.NEXTAUTH_URL, // Make sure this is set correctly
-      }),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params.toString()
     });
 
     const tokenData = await tokenRes.json();
+    console.log('Token exchange result:', tokenData);
 
-    if (!tokenRes.ok) {
-      console.error('Token error:', tokenData);
-      return res.status(500).json({ error: 'Token exchange failed' });
+    if (!tokenRes.ok || !tokenData.access_token) {
+      return res.status(400).json({ error: 'Token exchange failed', details: tokenData });
     }
 
-    const { access_token, refresh_token, expires_in, created_at } = tokenData;
+    const { access_token, refresh_token, expires_in } = tokenData;
+    const userId = req.cookies?.clientreach_user_id || 'debug-user';
 
-    // Store token in Supabase (you can adapt this to your user structure)
-    const { error } = await supabase
-      .from('tokens')
-      .insert([
-        {
-          provider: 'freshbooks',
-          access_token,
-          refresh_token,
-          expires_in,
-          created_at: new Date().toISOString(),
-        },
-      ]);
+    const { error } = await supabase.from('tokens').upsert({
+      user_id: userId,
+      provider: 'freshbooks',
+      access_token,
+      refresh_token,
+      expires_at: Math.floor(Date.now() / 1000) + expires_in
+    });
 
     if (error) {
       console.error('Supabase insert error:', error);
-      return res.status(500).json({ error: 'Failed to store token in Supabase' });
+      return res.status(500).json({ error: 'Failed to save token', details: error });
     }
 
-    return res.redirect('/contacts');
+    res.redirect('/contacts');
   } catch (err) {
-    console.error('Callback handler crash:', err);
-    return res.status(500).json({ error: 'Unexpected server error' });
+    console.error('Callback handler exception:', err);
+    res.status(500).json({ error: 'Unexpected error during token exchange' });
   }
 }
