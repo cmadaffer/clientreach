@@ -15,7 +15,6 @@ export default function ContactsPage() {
 
         if (!res.ok) {
           setError(data.error || 'Something went wrong');
-          setContacts([]);
         } else {
           setContacts(data.contacts || []);
         }
@@ -34,56 +33,72 @@ export default function ContactsPage() {
       <Head>
         <title>Client Contacts</title>
       </Head>
-      <div style={styles.container}>
-        <h1 style={styles.header}>Client Contacts</h1>
+      <main style={styles.wrapper}>
+        <h1 style={styles.title}>Your Clients</h1>
 
-        {loading && <p style={styles.message}>Loading contacts...</p>}
-        {error && <p style={{ ...styles.message, color: 'red' }}>Error: {error}</p>}
-
+        {loading && <p style={styles.status}>Loading contacts...</p>}
+        {error && <p style={{ ...styles.status, color: '#d33' }}>Error: {error}</p>}
         {!loading && contacts.length === 0 && !error && (
-          <p style={styles.message}>No contacts found.</p>
+          <p style={styles.status}>No contacts found.</p>
         )}
 
-        <div style={styles.cardGrid}>
-          {contacts.map((contact) => (
-            <div key={contact.id} style={styles.card}>
-              <h3>{contact.organization || contact.first_name + ' ' + contact.last_name}</h3>
-              <p>Email: {contact.email || '—'}</p>
-              <p>Phone: {contact.phone || '—'}</p>
+        <section style={styles.grid}>
+          {contacts.map((contact, i) => (
+            <div key={i} style={styles.card}>
+              <h2 style={styles.name}>
+                {contact.organization ||
+                  `${contact.first_name || ''} ${contact.last_name || ''}`.trim() ||
+                  'Unnamed Contact'}
+              </h2>
+              <p style={styles.detail}>📧 {contact.email || '—'}</p>
+              <p style={styles.detail}>📞 {contact.phone || '—'}</p>
             </div>
           ))}
-        </div>
-      </div>
+        </section>
+      </main>
     </>
   );
 }
 
 const styles = {
-  container: {
+  wrapper: {
     padding: '2rem',
-    fontFamily: 'Arial, sans-serif',
-    background: '#f9f9f9',
-    minHeight: '100vh',
+    maxWidth: '1000px',
+    margin: '0 auto',
+    fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif',
   },
-  header: {
-    fontSize: '2rem',
+  title: {
+    fontSize: '2.5rem',
+    fontWeight: 600,
+    marginBottom: '2rem',
+    color: '#333',
+  },
+  status: {
+    fontSize: '1.1rem',
     marginBottom: '1.5rem',
   },
-  message: {
-    fontSize: '1rem',
-    marginBottom: '1rem',
-  },
-  cardGrid: {
+  grid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))',
     gap: '1.5rem',
+    gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))',
   },
   card: {
-    padding: '1rem',
-    background: '#fff',
-    borderRadius: '10px',
-    boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
-    border: '1px solid #e5e5e5',
+    backgroundColor: '#fff',
+    padding: '1.5rem',
+    borderRadius: '1rem',
+    boxShadow: '0 6px 20px rgba(0,0,0,0.06)',
+    border: '1px solid #e6e6e6',
+    transition: 'transform 0.2s ease',
+  },
+  name: {
+    fontSize: '1.25rem',
+    fontWeight: 600,
+    marginBottom: '0.75rem',
+    color: '#222',
+  },
+  detail: {
+    fontSize: '1rem',
+    color: '#555',
   },
 };
 
