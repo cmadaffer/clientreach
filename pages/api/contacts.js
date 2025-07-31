@@ -1,39 +1,40 @@
+// pages/api/contacts.js
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
+
 export default async function handler(req, res) {
-  const authHeader = req.headers.authorization;
+  const { data: tokens, error } = await supabase
+    .from('freshbooks_tokens')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(1);
 
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    return res.status(401).json({ error: "Unauthorized - No token found" });
+  if (error || !tokens || tokens.length === 0) {
+    return res.status(401).json({ error: 'Unauthorized - No token found' });
   }
 
-  const token = authHeader.split(" ")[1];
-  const accountId = process.env.FRESHBOOKS_ACCOUNT_ID;
-
-  if (!accountId) {
-    return res.status(500).json({ error: "Missing FreshBooks Account ID" });
-  }
+  const { access_token } = tokens[0];
 
   try {
-    const response = await fetch(
-      `https://api.freshbooks.com/accounting/account/${accountId}/users/clients`,
-      {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-          "Api-Version": "alpha",
-        },
-      }
-    );
+    const apiRes = await fetch('https://api.freshbooks.com/accounting/account/me/contacts/contacts', {
+      headers: {
+        Authorization: `Bearer ${access_token}`,
+        'Api-Version': 'alpha',
+        'Content-Type': 'application/json',
+      },
+    });
 
-    const data = await response.json();
+    const apiData = await apiRes.json();
 
-    if (!response.ok) {
-      return res.status(500).json({ error: data });
-    }
+    const contacts = apiData?.response?.result?.contacts || [];
 
-    const clients = data?.response?.result?.clients || [];
-    res.status(200).json({ contacts: clients });
-  } catch (error) {
-    res.status(500).json({ error: "Failed to fetch contacts", details: error.message });
+    return res.status(200).json({ contacts });
+  } catch (err) {
+    console.error('Fetch contacts failed:', err);
+    return res.status(500).json({ error: 'Failed to fetch contacts' });
   }
 }
