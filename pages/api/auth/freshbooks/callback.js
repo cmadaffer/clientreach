@@ -13,9 +13,9 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Authorization code missing' });
   }
 
-  try {
-    const redirect_uri = 'https://clientreach.onrender.com/api/auth/freshbooks/callback';
+  const redirect_uri = 'https://clientreach.onrender.com/api/auth/freshbooks/callback';
 
+  try {
     const tokenRes = await fetch('https://api.freshbooks.com/auth/oauth/token', {
       method: 'POST',
       headers: {
@@ -40,8 +40,7 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: 'Token exchange failed', detail: tokenData });
     }
 
-    // Store in Supabase
-    await supabase.from('freshbooks_tokens').insert([
+    const { error } = await supabase.from('freshbooks_tokens').insert([
       {
         access_token: tokenData.access_token,
         refresh_token: tokenData.refresh_token,
@@ -51,10 +50,16 @@ export default async function handler(req, res) {
       },
     ]);
 
+    if (error) {
+      console.error('Supabase insert error:', error);
+      return res.status(500).json({ error: 'Failed to store token' });
+    }
+
     return res.redirect('/contacts');
   } catch (err) {
     console.error('Callback error:', err);
-    return res.status(500).json({ error: 'Callback error' });
+    return res.status(500).json({ error: 'Callback error', detail: err.message });
   }
 }
+
 
