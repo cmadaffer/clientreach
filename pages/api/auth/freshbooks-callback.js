@@ -1,71 +1,73 @@
-import { serialize } from "cookie";
-import axios from "axios";
+import { createClient } from '@supabase/supabase-js';
+import axios from 'axios';
+import cookie from 'cookie';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
 export default async function handler(req, res) {
   const { code } = req.query;
 
   if (!code) {
-    return res.status(400).send("Missing authorization code");
+    return res.status(400).json({ error: 'Missing FreshBooks auth code.' });
   }
 
   try {
-    const clientId = process.env.FRESHBOOKS_CLIENT_ID;
-    const clientSecret = process.env.FRESHBOOKS_CLIENT_SECRET;
-    const redirectUri = process.env.FRESHBOOKS_REDIRECT_URI || "https://clientreach.onrender.com/api/auth/freshbooks-callback";
-
-    const tokenRes = await axios.post(
-      "https://api.freshbooks.com/auth/oauth/token",
+    // Step 1: Exchange auth code for access token
+    const tokenResponse = await axios.post(
+      'https://api.freshbooks.com/auth/oauth/token',
       {
-        grant_type: "authorization_code",
-        client_id: clientId,
-        client_secret: clientSecret,
-        redirect_uri: redirectUri,
-        code,
+        grant_type: 'authorization_code',
+        client_id: process.env.FRESHBOOKS_CLIENT_ID,
+        client_secret: process.env.FRESHBOOKS_CLIENT_SECRET,
+        redirect_uri: `${process.env.NEXTAUTH_URL}/api/auth/freshbooks-callback`,
+        code: code,
       },
       {
         headers: {
-          "Content-Type": "application/json",
+          'Content-Type': 'application/json',
         },
       }
     );
 
-    const { access_token, refresh_token, expires_in } = tokenRes.data;
+    const { access_token, refresh_token, expires_in } = tokenResponse.data;
 
-    // Get the account ID from /auth/api/me
-    const meRes = await axios.get("https://api.freshbooks.com/auth/api/v1/users/me", {
-      headers: {
-        Authorization: `Bearer ${access_token}`,
-      },
-    });
+    // Step 2: Fetch identity (business ID)
+    const identityResponse = await axios.get(
+      'https://api.freshbooks.com/auth/api/v1/users/me',
+      {
+        headers: {
+          Authorization: `Bearer ${access_token}`,
+        },
+      }
+    );
 
-    const accountId = meRes.data?.response?.business_memberships?.[0]?.business?.account_id;
+    const businessMembership = identityResponse.data.response.roles[0];
+    const businessId = businessMembership.business.id;
 
-    if (!accountId) {
-      return res.status(500).json({ error: "Failed to retrieve FreshBooks Account ID" });
+    // Step 3: Store tokens and business ID in Supabase
+    const { error } = await supabase
+      .from('freshbooks_tokens')
+      .upsert({
+        user_email: req.cookies.user_email || 'anonymous',
+        access_token,
+        refresh_token,
+        expires_in,
+        business_id: businessId,
+        updated_at: new Date().toISOString(),
+      });
+
+    if (error) {
+      console.error('Supabase error:', error);
+      return res.status(500).json({ error: 'Token storage failed' });
     }
 
-    // Store token + account ID in secure cookies
-    res.setHeader("Set-Cookie", [
-      serialize("fb_access_token", access_token, {
-        httpOnly: true,
-        secure: true,
-        sameSite: "lax",
-        maxAge: 3600,
-        path: "/",
-      }),
-      serialize("fb_account_id", accountId, {
-        httpOnly: true,
-        secure: true,
-        sameSite: "lax",
-        maxAge: 3600,
-        path: "/",
-      }),
-    ]);
-
-    // Redirect to contacts page
-    res.redirect("/contacts");
+    // Step 4: Redirect to home or dashboard
+    return res.redirect('/');
   } catch (err) {
-    console.error("OAuth error:", err.response?.data || err.message);
-    res.status(500).json({ error: "OAuth failed", detail: err.response?.data || err.message });
+    console.error('FreshBooks callback error:', err.response?.data || err.message);
+    return res.status(500).json({ error: 'FreshBooks OAuth failed' });
   }
 }
