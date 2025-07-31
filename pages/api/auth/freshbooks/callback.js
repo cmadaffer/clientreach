@@ -1,4 +1,5 @@
 // pages/api/auth/freshbooks/callback.js
+
 import { createClient } from '@supabase/supabase-js';
 
 const supabase = createClient(
@@ -10,56 +11,55 @@ export default async function handler(req, res) {
   const { code } = req.query;
 
   if (!code) {
-    return res.status(400).json({ error: 'Authorization code missing' });
+    return res.status(400).json({ error: 'Missing authorization code' });
   }
-
-  const redirect_uri = 'https://clientreach.onrender.com/api/auth/freshbooks/callback';
 
   try {
     const tokenRes = await fetch('https://api.freshbooks.com/auth/oauth/token', {
       method: 'POST',
       headers: {
-        Authorization:
-          'Basic ' +
-          Buffer.from(
-            `${process.env.FRESHBOOKS_CLIENT_ID}:${process.env.FRESHBOOKS_CLIENT_SECRET}`
-          ).toString('base64'),
         'Content-Type': 'application/json',
+        'Api-Version': 'alpha',
       },
       body: JSON.stringify({
         grant_type: 'authorization_code',
+        client_id: process.env.FRESHBOOKS_CLIENT_ID,
+        client_secret: process.env.FRESHBOOKS_CLIENT_SECRET,
         code,
-        redirect_uri,
+        redirect_uri: process.env.NEXTAUTH_URL, // Make sure this is set correctly
       }),
     });
 
     const tokenData = await tokenRes.json();
 
     if (!tokenRes.ok) {
-      console.error('Token exchange failed:', tokenData);
-      return res.status(500).json({ error: 'Token exchange failed', detail: tokenData });
+      console.error('Token error:', tokenData);
+      return res.status(500).json({ error: 'Token exchange failed' });
     }
 
-    const { error } = await supabase.from('freshbooks_tokens').insert([
-      {
-        access_token: tokenData.access_token,
-        refresh_token: tokenData.refresh_token,
-        expires_in: tokenData.expires_in,
-        token_type: tokenData.token_type,
-        created_at: new Date().toISOString(),
-      },
-    ]);
+    const { access_token, refresh_token, expires_in, created_at } = tokenData;
+
+    // Store token in Supabase (you can adapt this to your user structure)
+    const { error } = await supabase
+      .from('tokens')
+      .insert([
+        {
+          provider: 'freshbooks',
+          access_token,
+          refresh_token,
+          expires_in,
+          created_at: new Date().toISOString(),
+        },
+      ]);
 
     if (error) {
       console.error('Supabase insert error:', error);
-      return res.status(500).json({ error: 'Failed to store token' });
+      return res.status(500).json({ error: 'Failed to store token in Supabase' });
     }
 
     return res.redirect('/contacts');
   } catch (err) {
-    console.error('Callback error:', err);
-    return res.status(500).json({ error: 'Callback error', detail: err.message });
+    console.error('Callback handler crash:', err);
+    return res.status(500).json({ error: 'Unexpected server error' });
   }
 }
-
-
