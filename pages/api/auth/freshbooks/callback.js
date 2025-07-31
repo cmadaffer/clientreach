@@ -17,47 +17,38 @@ export default async function handler(req, res) {
     const tokenRes = await fetch('https://api.freshbooks.com/auth/oauth/token', {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
-        'Api-Version': 'alpha'
+        'Authorization': 'Basic ' + Buffer.from(`${process.env.FRESHBOOKS_CLIENT_ID}:${process.env.FRESHBOOKS_CLIENT_SECRET}`).toString('base64'),
+        'Content-Type': 'application/json'
       },
       body: JSON.stringify({
         grant_type: 'authorization_code',
-        client_id: process.env.FRESHBOOKS_CLIENT_ID,
-        client_secret: process.env.FRESHBOOKS_CLIENT_SECRET,
-        redirect_uri: 'https://clientreach.onrender.com/api/auth/freshbooks/callback',
-        code
-      })
+        code,
+        redirect_uri: 'https://clientreach.onrender.com/api/auth/freshbooks/callback'
+      }),
     });
 
     const tokenData = await tokenRes.json();
 
     if (!tokenData.access_token) {
-      return res.status(401).json({ error: 'Token exchange failed', details: tokenData });
+      return res.status(401).json({ error: 'Token exchange failed', data: tokenData });
     }
 
-    // 🔒 Store token in Supabase (using dummy user_id for now)
+    // Save token to Supabase
     const { error } = await supabase
       .from('tokens')
-      .upsert({
-        user_id: 'test-user', // Replace with real user_id when you add auth
-        provider: 'freshbooks',
-        access_token: tokenData.access_token,
-        refresh_token: tokenData.refresh_token,
-        expires_in: tokenData.expires_in,
-        token_type: tokenData.token_type,
-        created_at: new Date().toISOString()
-      });
+      .insert([
+        {
+          access_token: tokenData.access_token,
+          refresh_token: tokenData.refresh_token,
+          expires_in: tokenData.expires_in
+        }
+      ]);
 
-    if (error) {
-      console.error('Supabase storage error:', error);
-      return res.status(500).json({ error: 'Failed to store token' });
-    }
+    if (error) throw error;
 
-    // ✅ Redirect to contacts
-    res.redirect('/contacts');
-
+    return res.redirect('/contacts');
   } catch (err) {
-    console.error('OAuth callback error:', err);
-    res.status(500).json({ error: 'Callback handler failed' });
+    return res.status(500).json({ error: 'Callback error', details: err.message });
   }
 }
+
