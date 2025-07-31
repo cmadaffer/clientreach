@@ -1,20 +1,14 @@
-// pages/api/auth/freshbooks-auth.js
-import { v4 as uuidv4 } from 'uuid';
-
+// ✅ pages/api/auth/freshbooks-auth.js
 export default async function handler(req, res) {
-  const state = uuidv4();
-
   const clientId = process.env.FRESHBOOKS_CLIENT_ID;
-  const redirectUri = process.env.NEXTAUTH_URL + '/api/auth/freshbooks-callback';
+  const redirectUri = 'https://clientreach.onrender.com/api/auth/freshbooks/callback';
+  const scopes = [
+    'user:profile:read',
+    'user:account:read',
+    'user:clients:read'
+  ];
 
-  const authUrl = `https://auth.freshbooks.com/oauth/authorize?` +
-    new URLSearchParams({
-      client_id: clientId,
-      response_type: 'code',
-      redirect_uri: redirectUri,
-      scope: 'user:profile accounting:read',
-      state,
-    });
+  const authUrl = `https://auth.freshbooks.com/oauth/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${scopes.join('+')}`;
 
   res.redirect(authUrl);
 }
