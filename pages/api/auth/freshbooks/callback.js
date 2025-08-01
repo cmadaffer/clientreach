@@ -21,7 +21,7 @@ export default async function handler(req, res) {
       grant_type: 'authorization_code',
       client_id: process.env.FRESHBOOKS_CLIENT_ID,
       client_secret: process.env.FRESHBOOKS_CLIENT_SECRET,
-      redirect_uri: 'https://clientreach.onrender.com/api/auth/freshbooks/callback',
+      redirect_uri: 'https://clientreach.onrender.com/api/auth/freshbooks/callback', // 🔥 HARD-CODED
       code,
     });
 
@@ -77,5 +77,4 @@ export default async function handler(req, res) {
     });
   }
 }
-
 
