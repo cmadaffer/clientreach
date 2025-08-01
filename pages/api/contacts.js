@@ -1,5 +1,7 @@
 // pages/api/contacts.js
+
 import { createClient } from '@supabase/supabase-js';
+import cookie from 'cookie';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -7,7 +9,8 @@ const supabase = createClient(
 );
 
 export default async function handler(req, res) {
-  const identityId = req.cookies?.freshbooks_identity_id;
+  const cookies = cookie.parse(req.headers.cookie || '');
+  const identityId = cookies.freshbooks_identity_id;
 
   if (!identityId) {
     return res.status(401).json({ error: 'Missing identity cookie' });
@@ -26,7 +29,7 @@ export default async function handler(req, res) {
 
   try {
     const response = await fetch('https://api.freshbooks.com/accounting/account/me/clients/clients', {
-      headers: { Authorization: `Bearer ${token.access_token}` }
+      headers: { Authorization: `Bearer ${token.access_token}` },
     });
 
     const json = await response.json();
