@@ -7,39 +7,34 @@ const supabase = createClient(
 );
 
 export default async function handler(req, res) {
-  const userId = req.cookies?.clientreach_user_id || 'clientreach-debug-user';
+  const identityId = req.cookies?.freshbooks_identity_id;
 
-  const { data: tokens, error } = await supabase
+  if (!identityId) {
+    return res.status(401).json({ error: 'Missing identity cookie' });
+  }
+
+  const { data: token, error } = await supabase
     .from('tokens')
     .select('*')
-    .eq('user_id', userId)
+    .eq('identity', identityId)
     .eq('provider', 'freshbooks')
-    .limit(1)
-    .maybeSingle();
+    .single();
 
-  if (error) {
-    console.error('Supabase token fetch error:', error);
-    return res.status(500).json({ error: 'Token fetch failed' });
+  if (error || !token?.access_token) {
+    return res.status(401).json({ error: 'No valid token found for identity' });
   }
-
-  if (!tokens || !tokens.access_token) {
-    return res.status(401).json({ error: 'No token found' });
-  }
-
-  const accessToken = tokens.access_token;
 
   try {
-    const response = await fetch('https://api.freshbooks.com/auth/api/v1/users/me', {
-      headers: { Authorization: `Bearer ${accessToken}` }
+    const response = await fetch('https://api.freshbooks.com/accounting/account/me/clients/clients', {
+      headers: { Authorization: `Bearer ${token.access_token}` }
     });
 
-    const userData = await response.json();
-    console.log('FreshBooks user profile:', userData);
+    const json = await response.json();
+    const clients = json?.response?.result?.clients || [];
 
-    // You can also fetch clients if needed here
-    res.status(200).json({ success: true, user: userData });
+    res.status(200).json({ contacts: clients });
   } catch (err) {
-    console.error('Error accessing FreshBooks API:', err);
-    res.status(500).json({ error: 'Failed to access FreshBooks' });
+    console.error('Error fetching clients from FreshBooks:', err);
+    res.status(500).json({ error: 'Failed to fetch clients' });
   }
 }
