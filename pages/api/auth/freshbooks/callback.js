@@ -1,5 +1,6 @@
 // pages/api/auth/freshbooks/callback.js
 import { createClient } from '@supabase/supabase-js';
+import axios from 'axios';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -9,54 +10,44 @@ const supabase = createClient(
 export default async function handler(req, res) {
   const { code } = req.query;
 
-  if (!code) {
-    return res.status(400).json({ error: 'Missing authorization code' });
-  }
+  if (!code) return res.status(400).json({ error: 'Missing authorization code' });
 
   try {
-    const params = new URLSearchParams();
-    params.append('grant_type', 'authorization_code');
-    params.append('client_id', process.env.FRESHBOOKS_CLIENT_ID);
-    params.append('client_secret', process.env.FRESHBOOKS_CLIENT_SECRET);
-    params.append('code', code);
-    params.append('redirect_uri', 'https://clientreach.onrender.com/api/auth/freshbooks/callback');
-
-    const tokenRes = await fetch('https://api.freshbooks.com/auth/oauth/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: params.toString()
+    // 1. Exchange code for tokens
+    const tokenRes = await axios.post('https://api.freshbooks.com/auth/oauth/token', {
+      grant_type: 'authorization_code',
+      client_id: process.env.FRESHBOOKS_CLIENT_ID,
+      client_secret: process.env.FRESHBOOKS_CLIENT_SECRET,
+      code,
+      redirect_uri: process.env.FRESHBOOKS_REDIRECT_URI
     });
 
-    const tokenData = await tokenRes.json();
-    console.log('Token exchange result:', tokenData);
+    const { access_token, refresh_token } = tokenRes.data;
 
-    if (!tokenRes.ok || !tokenData.access_token) {
-      return res.status(400).json({ error: 'Token exchange failed', details: tokenData });
+    // 2. Get profile (identity + business memberships)
+    const profileRes = await axios.get('https://api.freshbooks.com/auth/api/v1/users/me', {
+      headers: { Authorization: `Bearer ${access_token}` }
+    });
+
+    const memberships = profileRes.data.response.business_memberships;
+    const account_id = memberships?.[0]?.account_id; // Extract first business ID
+
+    if (!account_id) {
+      return res.status(500).json({ error: 'No account ID found in FreshBooks profile' });
     }
 
-    const { access_token, refresh_token, expires_in } = tokenData;
-
-    // Use cookie or fallback to 'clientreach-debug-user'
-    const userId = req.cookies?.clientreach_user_id || 'clientreach-debug-user';
-
-    const { error } = await supabase.from('tokens').upsert({
-      user_id: userId,
-      provider: 'freshbooks',
+    // 3. Store access_token and account_id in Supabase
+    await supabase.from('freshbooks_tokens').upsert({
+      id: 1, // single user for now
       access_token,
       refresh_token,
-      expires_at: Math.floor(Date.now() / 1000) + expires_in
+      account_id
     });
 
-    if (error) {
-      console.error('Supabase insert error:', error);
-      return res.status(500).json({ error: 'Failed to save token', details: error });
-    }
-
-    // Redirect to contacts UI after successful token save
     res.redirect('/contacts');
   } catch (err) {
-    console.error('Callback handler exception:', err);
-    res.status(500).json({ error: 'Unexpected error during token exchange' });
+    console.error('OAuth callback error:', err.response?.data || err.message);
+    res.status(500).json({ error: 'Token exchange failed' });
   }
 }
 
