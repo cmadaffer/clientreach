@@ -2,7 +2,6 @@
 
 import axios from 'axios';
 import { createClient } from '@supabase/supabase-js';
-import cookie from 'cookie';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -17,12 +16,12 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Step 1: Exchange code for token
+    // Step 1: Exchange auth code for access token
     const tokenRes = await axios.post('https://api.freshbooks.com/auth/oauth/token', {
       grant_type: 'authorization_code',
       client_id: process.env.FRESHBOOKS_CLIENT_ID,
       client_secret: process.env.FRESHBOOKS_CLIENT_SECRET,
-      redirect_uri: process.env.FRESHBOOKS_REDIRECT_URI,
+      redirect_uri: 'https://clientreach.onrender.com/api/auth/freshbooks/callback', // <== HARDCODED
       code,
     });
 
@@ -35,7 +34,7 @@ export default async function handler(req, res) {
       created_at,
     } = tokenRes.data;
 
-    // Step 2: Get FreshBooks user ID
+    // Step 2: Fetch user identity to link token to identity_id
     const identityRes = await axios.get('https://api.freshbooks.com/auth/api/v1/users/me', {
       headers: {
         Authorization: `Bearer ${access_token}`,
@@ -43,11 +42,12 @@ export default async function handler(req, res) {
     });
 
     const identity = identityRes.data?.response?.id;
+
     if (!identity) {
-      return res.status(500).json({ error: 'Missing identity from FreshBooks' });
+      return res.status(500).json({ error: 'Missing identity from FreshBooks profile' });
     }
 
-    // Step 3: Store token
+    // Step 3: Store token in Supabase
     const { error: dbError } = await supabase
       .from('tokens')
       .upsert({
@@ -58,7 +58,6 @@ export default async function handler(req, res) {
         token_type,
         scope,
         created_at,
-        provider: 'freshbooks',
       }, { onConflict: ['identity'] });
 
     if (dbError) {
@@ -66,18 +65,16 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: 'Failed to save token', details: dbError });
     }
 
-    // Step 4: Set cookie with identity
-    res.setHeader('Set-Cookie', cookie.serialize('freshbooks_identity_id', identity, {
-      httpOnly: true,
-      path: '/',
-      maxAge: 60 * 60 * 24 * 7, // 7 days
-    }));
-
+    // ✅ Success
     res.redirect('/contacts');
   } catch (err) {
     const details = err.response?.data || err.message;
     console.error('OAuth callback error:', details);
-    res.status(500).json({ error: 'Token exchange failed', details });
+
+    return res.status(500).json({
+      error: 'Token exchange failed',
+      details,
+    });
   }
 }
 
