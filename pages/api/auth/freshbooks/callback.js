@@ -1,6 +1,5 @@
 // pages/api/auth/freshbooks/callback.js
 import { createClient } from '@supabase/supabase-js';
-import cookie from 'cookie';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -15,6 +14,7 @@ export default async function handler(req, res) {
   }
 
   try {
+    // Exchange the code for an access token
     const params = new URLSearchParams();
     params.append('grant_type', 'authorization_code');
     params.append('client_id', process.env.FRESHBOOKS_CLIENT_ID);
@@ -36,8 +36,12 @@ export default async function handler(req, res) {
     }
 
     const { access_token, refresh_token, expires_in } = tokenData;
-    const userId = req.cookies?.clientreach_user_id || crypto.randomUUID();
 
+    // ✅ Set a user ID cookie for this session
+    const userId = 'debug-user'; // Static for now. Replace with real auth system later.
+    res.setHeader('Set-Cookie', `clientreach_user_id=${userId}; Path=/; HttpOnly; Secure; SameSite=Strict`);
+
+    // ✅ Save tokens to Supabase
     const { error } = await supabase.from('tokens').upsert({
       user_id: userId,
       provider: 'freshbooks',
@@ -51,19 +55,11 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: 'Failed to save token', details: error });
     }
 
-    // Set cookie for clientreach_user_id
-    res.setHeader('Set-Cookie', cookie.serialize('clientreach_user_id', userId, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      maxAge: 60 * 60 * 24 * 30,
-      path: '/',
-      sameSite: 'lax'
-    }));
-
-    res.redirect('/contacts');
+    // ✅ Redirect to contacts page
+    return res.redirect('/contacts');
   } catch (err) {
     console.error('Callback handler exception:', err);
-    res.status(500).json({ error: 'Unexpected error during token exchange' });
+    return res.status(500).json({ error: 'Unexpected error during token exchange' });
   }
 }
 
