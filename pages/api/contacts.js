@@ -1,6 +1,5 @@
 // pages/api/contacts.js
 import { createClient } from '@supabase/supabase-js';
-import cookie from 'cookie';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -8,43 +7,39 @@ const supabase = createClient(
 );
 
 export default async function handler(req, res) {
-  const cookies = cookie.parse(req.headers.cookie || '');
-  const userId = cookies.clientreach_user_id;
+  const userId = req.cookies?.clientreach_user_id || 'clientreach-debug-user';
 
-  if (!userId) {
-    return res.status(401).json({ error: 'Unauthorized - No user ID found in cookies' });
-  }
-
-  const { data: tokenRow, error } = await supabase
+  const { data: tokens, error } = await supabase
     .from('tokens')
     .select('*')
     .eq('user_id', userId)
     .eq('provider', 'freshbooks')
-    .single();
+    .limit(1)
+    .maybeSingle();
 
-  if (error || !tokenRow) {
-    return res.status(401).json({ error: 'Unauthorized - No token found' });
+  if (error) {
+    console.error('Supabase token fetch error:', error);
+    return res.status(500).json({ error: 'Token fetch failed' });
   }
 
-  const { access_token } = tokenRow;
+  if (!tokens || !tokens.access_token) {
+    return res.status(401).json({ error: 'No token found' });
+  }
+
+  const accessToken = tokens.access_token;
 
   try {
-    const fbRes = await fetch('https://api.freshbooks.com/auth/api/v1/users/me', {
-      headers: {
-        Authorization: `Bearer ${access_token}`,
-        'Api-Version': 'alpha'
-      }
+    const response = await fetch('https://api.freshbooks.com/auth/api/v1/users/me', {
+      headers: { Authorization: `Bearer ${accessToken}` }
     });
 
-    const fbData = await fbRes.json();
+    const userData = await response.json();
+    console.log('FreshBooks user profile:', userData);
 
-    if (!fbRes.ok) {
-      return res.status(400).json({ error: 'Failed to fetch user data', details: fbData });
-    }
-
-    res.status(200).json({ freshbooksUser: fbData });
+    // You can also fetch clients if needed here
+    res.status(200).json({ success: true, user: userData });
   } catch (err) {
-    console.error('Error fetching from FreshBooks:', err);
-    res.status(500).json({ error: 'Internal Server Error' });
+    console.error('Error accessing FreshBooks API:', err);
+    res.status(500).json({ error: 'Failed to access FreshBooks' });
   }
 }
