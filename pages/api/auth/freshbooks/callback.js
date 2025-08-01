@@ -21,7 +21,7 @@ export default async function handler(req, res) {
       grant_type: 'authorization_code',
       client_id: process.env.FRESHBOOKS_CLIENT_ID,
       client_secret: process.env.FRESHBOOKS_CLIENT_SECRET,
-      redirect_uri: process.env.FRESHBOOKS_REDIRECT_URI,
+      redirect_uri: 'https://clientreach.onrender.com/api/auth/freshbooks/callback',
       code,
     });
 
