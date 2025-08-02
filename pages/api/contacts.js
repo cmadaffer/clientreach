@@ -21,14 +21,17 @@ export default async function handler(req, res) {
       return res.status(401).json({ error: 'No FreshBooks token found' });
     }
 
-    const token = tokenRows[0];
-    const accountId = process.env.FRESHBOOKS_ACCOUNT_ID;
+    const { access_token, account_id } = tokenRows[0];
+
+    if (!account_id) {
+      return res.status(500).json({ error: 'FreshBooks account_id missing in database' });
+    }
 
     const response = await axios.get(
-      `https://api.freshbooks.com/accounting/account/${accountId}/users/clients`,
+      `https://api.freshbooks.com/accounting/account/${account_id}/users/clients`,
       {
         headers: {
-          Authorization: `Bearer ${token.access_token}`,
+          Authorization: `Bearer ${access_token}`,
           'Api-Version': 'alpha',
           'Content-Type': 'application/json',
         },
@@ -36,15 +39,12 @@ export default async function handler(req, res) {
     );
 
     const clients = response.data?.response?.result?.clients || [];
-
     return res.status(200).json({ contacts: clients });
   } catch (err) {
-    // 🚨 Log full FreshBooks error for inspection
-    console.error('🔥 FreshBooks API ERROR:', JSON.stringify(err.response?.data || err.message, null, 2));
-
+    console.error('🔥 FreshBooks API ERROR:', err?.response?.data || err.message);
     return res.status(500).json({
       error: 'Failed to fetch contacts from FreshBooks',
-      details: err.response?.data || err.message,
+      details: err?.response?.data || err.message,
     });
   }
 }
