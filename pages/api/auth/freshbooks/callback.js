@@ -16,7 +16,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    // 1. Exchange auth code for access token
+    // 1. Exchange code for token
     const tokenRes = await axios.post('https://api.freshbooks.com/auth/oauth/token', {
       grant_type: 'authorization_code',
       client_id: process.env.FRESHBOOKS_CLIENT_ID,
@@ -29,23 +29,21 @@ export default async function handler(req, res) {
       access_token,
       refresh_token,
       expires_in,
-      token_type,
-      scope,
-      created_at,
     } = tokenRes.data;
 
-    // 2. Get user ID from FreshBooks
+    // 2. Get user + account info
     const identityRes = await axios.get('https://api.freshbooks.com/auth/api/v1/users/me', {
       headers: { Authorization: `Bearer ${access_token}` },
     });
 
     const user_id = identityRes.data?.response?.id;
+    const account_id = identityRes.data?.response?.business_memberships?.[0]?.account_id;
 
-    if (!user_id) {
-      return res.status(500).json({ error: 'Missing identity from FreshBooks profile' });
+    if (!user_id || !account_id) {
+      return res.status(500).json({ error: 'Missing identity or account_id from FreshBooks' });
     }
 
-    // 3. Store in Supabase
+    // 3. Save everything to Supabase
     const { error: dbError } = await supabase
       .from('tokens')
       .upsert(
@@ -55,6 +53,7 @@ export default async function handler(req, res) {
           access_token,
           refresh_token,
           expires_at: Date.now() + expires_in * 1000,
+          account_id,
         },
         { onConflict: ['user_id', 'provider'] }
       );
