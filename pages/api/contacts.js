@@ -18,7 +18,7 @@ export default async function handler(req, res) {
       .limit(1);
 
     if (error || !tokenRows || tokenRows.length === 0) {
-      throw new Error('No FreshBooks token found');
+      return res.status(401).json({ error: 'No FreshBooks token found' });
     }
 
     const token = tokenRows[0];
@@ -37,21 +37,14 @@ export default async function handler(req, res) {
 
     const clients = response.data?.response?.result?.clients || [];
 
-    // If real data exists, return it
-    if (clients.length > 0) {
-      return res.status(200).json({ contacts: clients });
-    }
-
-    throw new Error('No clients found from FreshBooks API');
+    return res.status(200).json({ contacts: clients });
   } catch (err) {
-    console.warn('FreshBooks failed — using dummy fallback:', err.message);
+    // 🚨 Log full FreshBooks error for inspection
+    console.error('🔥 FreshBooks API ERROR:', JSON.stringify(err.response?.data || err.message, null, 2));
 
-    // Dummy fallback data
-    const fallbackContacts = [
-      { first_name: 'Test', last_name: 'Client', email: 'test@example.com', phone: '555-555-1234' },
-      { first_name: 'Demo', last_name: 'User', email: 'demo@clientreach.ai', phone: null },
-    ];
-
-    return res.status(200).json({ contacts: fallbackContacts });
+    return res.status(500).json({
+      error: 'Failed to fetch contacts from FreshBooks',
+      details: err.response?.data || err.message,
+    });
   }
 }
