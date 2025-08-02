@@ -16,12 +16,12 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Step 1: Exchange auth code for access token
+    // 1. Exchange auth code for access token
     const tokenRes = await axios.post('https://api.freshbooks.com/auth/oauth/token', {
       grant_type: 'authorization_code',
       client_id: process.env.FRESHBOOKS_CLIENT_ID,
       client_secret: process.env.FRESHBOOKS_CLIENT_SECRET,
-      redirect_uri: 'https://clientreach.onrender.com/api/auth/freshbooks/callback', // <== HARDCODED
+      redirect_uri: 'https://clientreach.onrender.com/api/auth/freshbooks/callback',
       code,
     });
 
@@ -34,46 +34,42 @@ export default async function handler(req, res) {
       created_at,
     } = tokenRes.data;
 
-    // Step 2: Fetch user identity to link token to identity_id
+    // 2. Get user ID from FreshBooks
     const identityRes = await axios.get('https://api.freshbooks.com/auth/api/v1/users/me', {
-      headers: {
-        Authorization: `Bearer ${access_token}`,
-      },
+      headers: { Authorization: `Bearer ${access_token}` },
     });
 
-    const identity = identityRes.data?.response?.id;
+    const user_id = identityRes.data?.response?.id;
 
-    if (!identity) {
+    if (!user_id) {
       return res.status(500).json({ error: 'Missing identity from FreshBooks profile' });
     }
 
-    // Step 3: Store token in Supabase
+    // 3. Store in Supabase
     const { error: dbError } = await supabase
       .from('tokens')
-      .upsert({
-        identity,
-        access_token,
-        refresh_token,
-        expires_in,
-        token_type,
-        scope,
-        created_at,
-      }, { onConflict: ['identity'] });
+      .upsert(
+        {
+          user_id,
+          provider: 'freshbooks',
+          access_token,
+          refresh_token,
+          expires_at: Date.now() + expires_in * 1000,
+        },
+        { onConflict: ['user_id', 'provider'] }
+      );
 
     if (dbError) {
       console.error('Supabase token save error:', dbError);
       return res.status(500).json({ error: 'Failed to save token', details: dbError });
     }
 
-    // ✅ Success
     res.redirect('/contacts');
   } catch (err) {
-    const details = err.response?.data || err.message;
-    console.error('OAuth callback error:', details);
-
+    console.error('OAuth callback error:', err?.response?.data || err.message);
     return res.status(500).json({
       error: 'Token exchange failed',
-      details,
+      details: err?.response?.data || err.message,
     });
   }
 }
