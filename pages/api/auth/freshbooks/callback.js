@@ -16,7 +16,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    // 1. Exchange code for token
+    // 1) Exchange code for token
     const tokenRes = await axios.post('https://api.freshbooks.com/auth/oauth/token', {
       grant_type: 'authorization_code',
       client_id: process.env.FRESHBOOKS_CLIENT_ID,
@@ -25,25 +25,26 @@ export default async function handler(req, res) {
       code,
     });
 
-    const {
-      access_token,
-      refresh_token,
-      expires_in,
-    } = tokenRes.data;
+    const { access_token, refresh_token, expires_in } = tokenRes.data;
 
-    // 2. Get user + account info
+    // 2) Get user + business memberships (to obtain account_id)
     const identityRes = await axios.get('https://api.freshbooks.com/auth/api/v1/users/me', {
       headers: { Authorization: `Bearer ${access_token}` },
     });
 
-    const user_id = identityRes.data?.response?.id;
-    const account_id = identityRes.data?.response?.business_memberships?.[0]?.account_id;
+    const resp = identityRes?.data?.response || {};
+    const user_id =
+      resp?.user?.id ?? resp?.id ?? null; // FreshBooks returns user under response.user
+    const account_id =
+      resp?.business_memberships?.[0]?.account_id ?? null;
 
     if (!user_id || !account_id) {
+      // Log full payload once for diagnosis without bothering you
+      console.error('FreshBooks /users/me payload (for debug):', JSON.stringify(identityRes?.data || {}, null, 2));
       return res.status(500).json({ error: 'Missing identity or account_id from FreshBooks' });
     }
 
-    // 3. Save everything to Supabase
+    // 3) Save token + account_id
     const { error: dbError } = await supabase
       .from('tokens')
       .upsert(
@@ -63,7 +64,7 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: 'Failed to save token', details: dbError });
     }
 
-    res.redirect('/contacts');
+    return res.redirect('/contacts');
   } catch (err) {
     console.error('OAuth callback error:', err?.response?.data || err.message);
     return res.status(500).json({
