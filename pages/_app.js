@@ -1,9 +1,13 @@
-import { SessionProvider } from "next-auth/react";
+// pages/_app.js
+import NavBar from '../components/NavBar';
 
-export default function App({ Component, pageProps }) {
+export default function MyApp({ Component, pageProps }) {
   return (
-    <SessionProvider session={pageProps.session}>
-      <Component {...pageProps} />
-    </SessionProvider>
+    <div style={{ fontFamily: 'ui-sans-serif, system-ui' }}>
+      <NavBar />
+      <main style={{ maxWidth: 1100, margin: '20px auto', padding: '0 16px' }}>
+        <Component {...pageProps} />
+      </main>
+    </div>
   );
 }
