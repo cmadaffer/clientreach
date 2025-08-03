@@ -1,5 +1,4 @@
 // pages/api/auth/freshbooks/callback.js
-
 import axios from 'axios';
 import { createClient } from '@supabase/supabase-js';
 
@@ -10,10 +9,7 @@ const supabase = createClient(
 
 export default async function handler(req, res) {
   const { code } = req.query;
-
-  if (!code) {
-    return res.status(400).json({ error: 'Missing authorization code from FreshBooks' });
-  }
+  if (!code) return res.status(400).json({ error: 'Missing authorization code from FreshBooks' });
 
   try {
     // 1) Exchange code for token
@@ -24,22 +20,17 @@ export default async function handler(req, res) {
       redirect_uri: 'https://clientreach.onrender.com/api/auth/freshbooks/callback',
       code,
     });
-
     const { access_token, refresh_token, expires_in } = tokenRes.data;
 
-    // 2) Get user + business memberships (to obtain account_id)
+    // 2) Fetch user + business to get the TRUE accounting account_id (short string like "3ppEvl")
     const identityRes = await axios.get('https://api.freshbooks.com/auth/api/v1/users/me', {
       headers: { Authorization: `Bearer ${access_token}` },
     });
-
     const resp = identityRes?.data?.response || {};
-    const user_id =
-      resp?.user?.id ?? resp?.id ?? null; // FreshBooks returns user under response.user
-    const account_id =
-      resp?.business_memberships?.[0]?.account_id ?? null;
+    const user_id = resp?.user?.id ?? resp?.id ?? null;
+    const account_id = resp?.business_memberships?.[0]?.business?.account_id ?? null; // <-- correct path
 
     if (!user_id || !account_id) {
-      // Log full payload once for diagnosis without bothering you
       console.error('FreshBooks /users/me payload (for debug):', JSON.stringify(identityRes?.data || {}, null, 2));
       return res.status(500).json({ error: 'Missing identity or account_id from FreshBooks' });
     }
@@ -54,7 +45,7 @@ export default async function handler(req, res) {
           access_token,
           refresh_token,
           expires_at: Date.now() + expires_in * 1000,
-          account_id,
+          account_id, // TEXT
         },
         { onConflict: ['user_id', 'provider'] }
       );
@@ -67,10 +58,7 @@ export default async function handler(req, res) {
     return res.redirect('/contacts');
   } catch (err) {
     console.error('OAuth callback error:', err?.response?.data || err.message);
-    return res.status(500).json({
-      error: 'Token exchange failed',
-      details: err?.response?.data || err.message,
-    });
+    return res.status(500).json({ error: 'Token exchange failed', details: err?.response?.data || err.message });
   }
 }
 
