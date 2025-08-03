@@ -11,10 +11,11 @@ const tabs = [
 
 export default function NavBar() {
   const { pathname } = useRouter();
+
   return (
     <header style={S.header}>
       <div style={S.inner}>
-        <div style={S.brand}>ClientReach</div>
+        <Link href="/" style={S.brand}>ClientReach</Link>
         <nav style={S.nav}>
           {tabs.map(t => {
             const active = pathname === t.href;
@@ -32,8 +33,9 @@ export default function NavBar() {
 
 const S = {
   header: { borderBottom: '1px solid #e5e7eb', background: '#fff' },
-  inner: { maxWidth: 1100, margin: '0 auto', padding: '10px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' },
-  brand: { fontWeight: 700, color: '#0f172a' },
+  inner: { maxWidth: 1100, margin: '0 auto', padding: '10px 16px',
+           display: 'flex', alignItems: 'center', justifyContent: 'space-between' },
+  brand: { fontWeight: 700, color: '#0f172a', textDecoration: 'none' },
   nav: { display: 'flex', gap: 14 },
   link: { padding: '6px 10px', borderRadius: 8, color: '#0f172a', textDecoration: 'none' },
   linkActive: { padding: '6px 10px', borderRadius: 8, background: '#0f172a', color: '#fff', textDecoration: 'none' },
