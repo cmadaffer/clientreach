@@ -30,13 +30,17 @@ async function fetchAllClients({ access_token, account_id }) {
     const batch = result.clients || [];
     const pagesMeta = result.pages || null;
 
-    if (pagesMeta && typeof pagesMeta === 'object') {
-      totalPages = pagesMeta.pages ?? totalPages;
+    if (pagesMeta && typeof pagesMeta === 'object' && Number.isFinite(pagesMeta.pages)) {
+      totalPages = pagesMeta.pages;
     }
 
     all = all.concat(batch);
+
     if (totalPages ? page >= totalPages : batch.length < perPage) break;
     page += 1;
+
+    // light throttle to avoid rate limits
+    await new Promise((r) => setTimeout(r, 100));
   }
 
   return all;
@@ -54,7 +58,7 @@ export default async function handler(req, res) {
     const dir = (req.query.dir || 'asc').toString();    // 'asc' | 'desc'
     const dirFactor = dir === 'desc' ? -1 : 1;
 
-    // 1) get token + account
+    // 1) token + account_id
     const { data: rows, error } = await supabase
       .from('tokens')
       .select('*')
@@ -65,25 +69,41 @@ export default async function handler(req, res) {
     if (error || !rows?.length) {
       return res.status(401).json({ error: 'No FreshBooks token found' });
     }
+
     const { access_token, account_id } = rows[0];
     if (!account_id) {
       return res.status(500).json({ error: 'FreshBooks account_id missing in database' });
     }
 
-    // 2) fetch all
+    // 2) fetch all clients
     const clients = await fetchAllClients({ access_token, account_id });
 
-    // 3) sort server-side for a stable order
+    // 3) sort server-side
     const sorted = clients.slice().sort((a, b) => {
       if (sort === 'created') {
         const aDate = new Date(a?.created_at || a?.updated || 0).getTime() || 0;
         const bDate = new Date(b?.created_at || b?.updated || 0).getTime() || 0;
         return (aDate - bDate) * dirFactor;
+      } else {
+        const an = displayName(a).toLowerCase();
+        const bn = displayName(b).toLowerCase();
+        if (an < bn) return -1 * dirFactor;
+        if (an > bn) return 1 * dirFactor;
+        return 0;
       }
-      // default: name/org
-      const an = displayName(a).toLowerCase();
-      const bn = displayName(b).toLowerCase();
-      if (an < bn) return -1 * dirFactor;
-      if (an > bn) return 1 * dirFactor;
-      return 0;
-    }
+    });
+
+    return res.status(200).json({
+      contacts: sorted,
+      total: sorted.length,
+      sort,
+      dir,
+    });
+  } catch (err) {
+    console.error('🔥 FreshBooks API ERROR:', err?.response?.data || err.message);
+    return res.status(500).json({
+      error: 'Failed to fetch contacts from FreshBooks',
+      details: err?.response?.data || err.message,
+    });
+  }
+}
