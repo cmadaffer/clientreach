@@ -9,6 +9,7 @@ const supabase = createClient(
 
 export default async function handler(req, res) {
   try {
+    // 1) Get latest FreshBooks token + account_id
     const { data: tokenRows, error } = await supabase
       .from('tokens')
       .select('*')
@@ -16,7 +17,7 @@ export default async function handler(req, res) {
       .order('inserted_at', { ascending: false })
       .limit(1);
 
-    if (error || !tokenRows || tokenRows.length === 0) {
+    if (error || !tokenRows?.length) {
       return res.status(401).json({ error: 'No FreshBooks token found' });
     }
 
@@ -25,17 +26,36 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: 'FreshBooks account_id missing in database' });
     }
 
-    const url = `https://api.freshbooks.com/accounting/account/${account_id}/users/clients`;
-    const response = await axios.get(url, {
-      headers: {
-        Authorization: `Bearer ${access_token}`,
-        'Api-Version': 'alpha',
-        'Content-Type': 'application/json',
-      },
-    });
+    // 2) Page through all clients
+    const perPage = 100; // FreshBooks max page size
+    let page = 1;
+    let all = [];
+    // Some accounts return pagination info; we’ll loop until we stop getting results
+    for (;;) {
+      const url =
+        `https://api.freshbooks.com/accounting/account/${account_id}/users/clients` +
+        `?page=${page}&per_page=${perPage}`;
 
-    const clients = response.data?.response?.result?.clients || [];
-    return res.status(200).json({ contacts: clients });
+      const resp = await axios.get(url, {
+        headers: {
+          Authorization: `Bearer ${access_token}`,
+          'Api-Version': 'alpha',
+          'Content-Type': 'application/json',
+        },
+      });
+
+      const batch = resp.data?.response?.result?.clients ?? [];
+      all = all.concat(batch);
+
+      // Stop when fewer than perPage returned (no more pages)
+      if (batch.length < perPage) break;
+      page += 1;
+
+      // (Optional) tiny delay to be nice to the API; adjust if you hit 429s
+      await new Promise(r => setTimeout(r, 120));
+    }
+
+    return res.status(200).json({ contacts: all, total: all.length });
   } catch (err) {
     console.error('🔥 FreshBooks API ERROR:', err?.response?.data || err.message);
     return res.status(500).json({
