@@ -1,12 +1,9 @@
-// pages/api/cron/inbox.js
+// pages/api/cron/inbox.js (diagnostic)
 
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import { createClient } from '@supabase/supabase-js';
 
-/**
- * ---- Safety / Setup --------------------------------------------------------
- */
 const REQUIRED_ENVS = [
   'NEXT_PUBLIC_SUPABASE_URL',
   'SUPABASE_SERVICE_ROLE_KEY',
@@ -19,7 +16,9 @@ const REQUIRED_ENVS = [
 function checkEnv() {
   const missing = REQUIRED_ENVS.filter((k) => !process.env[k] || String(process.env[k]).trim() === '');
   if (missing.length) {
-    throw new Error(`Missing environment variables: ${missing.join(', ')}`);
+    const msg = `Missing environment variables: ${missing.join(', ')}`;
+    console.error('ENV CHECK FAILED:', msg);
+    throw new Error(msg);
   }
 }
 
@@ -28,22 +27,13 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// Optional shared secret to block random callers (set CRON_SECRET in Render and cron-job.org header)
 function checkCronSecret(req) {
   const secret = process.env.CRON_SECRET;
-  if (!secret) return; // not enforced
+  if (!secret) return;
   const header = req.headers['x-cron-secret'];
-  if (header !== secret) {
-    const ip = req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown';
-    throw new Error(`Unauthorized cron caller from ${ip}`);
-  }
+  if (header !== secret) throw new Error('Unauthorized cron caller (bad X-Cron-Secret)');
 }
 
-/**
- * ---- Helpers ---------------------------------------------------------------
- */
-
-// Very light intent classifier (can be improved later)
 function classifyIntent(text) {
   const t = (text || '').toLowerCase();
   if (/stop|unsubscribe|remove me|opt[- ]?out|no longer/i.test(t)) return 'unsubscribe';
@@ -55,7 +45,6 @@ function classifyIntent(text) {
   return 'general_question';
 }
 
-// Derive a thread key (normalize subject or use reply headers)
 function deriveThreadKey({ subject, inReplyTo, references }) {
   if (inReplyTo) return String(inReplyTo).trim();
   if (references) {
@@ -66,56 +55,50 @@ function deriveThreadKey({ subject, inReplyTo, references }) {
   return s || null;
 }
 
-// Persist an inbound message + analytics event
-async function saveInbound({
-  from,
-  to,
-  subject,
-  bodyText,
-  headers,
-  messageId,
-  inReplyTo,
-  references
-}) {
-  const combined = `${subject || ''}\n${bodyText || ''}`;
+async function saveInbound(row) {
+  const combined = `${row.subject || ''}\n${row.bodyText || ''}`;
   const intent = classifyIntent(combined);
-  const thread_key = deriveThreadKey({ subject, inReplyTo, references });
+  const thread_key = deriveThreadKey({
+    subject: row.subject,
+    inReplyTo: row.inReplyTo,
+    references: row.references
+  });
 
-  const { data, error } = await supabase
-    .from('inbox_messages')
-    .insert({
-      channel: 'email',
-      direction: 'inbound',
-      from_addr: from || null,
-      to_addr: to || null,
-      subject: subject || null,
-      body: bodyText || null,
-      message_id: messageId || null,
-      in_reply_to: inReplyTo || null,
-      msg_references: references || null, // IMPORTANT: msg_references (not "references")
-      thread_key,
-      intent,
-      meta: headers || {},
-      status: intent === 'unsubscribe' ? 'handled' : 'new'
-    })
-    .select('id')
-    .single();
+  const { error } = await supabase.from('inbox_messages').insert({
+    channel: 'email',
+    direction: 'inbound',
+    from_addr: row.from || null,
+    to_addr: row.to || null,
+    subject: row.subject || null,
+    body: row.bodyText || null,
+    message_id: row.messageId || null,
+    in_reply_to: row.inReplyTo || null,
+    msg_references: row.references || null,
+    thread_key,
+    intent,
+    meta: row.headers || {},
+    status: intent === 'unsubscribe' ? 'handled' : 'new'
+  });
 
   if (error) throw error;
 
   await supabase.from('events').insert({
     type: intent === 'unsubscribe' ? 'unsubscribe' : 'reply',
-    payload: { message_id: messageId, intent, from, to, subject }
+    payload: { message_id: row.messageId, intent, from: row.from, to: row.to, subject: row.subject }
   });
 
-  return { id: data.id, intent };
+  return intent;
 }
 
-/**
- * ---- IMAP Fetcher ----------------------------------------------------------
- */
-
 async function fetchUnreadSince({ days = 3 }) {
+  console.log('STEP A: building IMAP client with envs:', {
+    host: process.env.IMAP_HOST,
+    port: Number(process.env.IMAP_PORT || 993),
+    secure: String(process.env.IMAP_SECURE ?? 'true') !== 'false',
+    user: process.env.IMAP_USER,
+    passLen: process.env.IMAP_PASS ? String(process.env.IMAP_PASS).length : 0
+  });
+
   const client = new ImapFlow({
     host: process.env.IMAP_HOST,
     port: Number(process.env.IMAP_PORT || 993),
@@ -127,24 +110,40 @@ async function fetchUnreadSince({ days = 3 }) {
   let processed = 0;
   let skipped = 0;
 
+  await client.connect();
+  console.log('STEP B: connected to IMAP');
+
+  const lock = await client.getMailboxLock('INBOX');
+  console.log('STEP C: locked INBOX');
+
   try {
-    await client.connect();
-    const lock = await client.getMailboxLock('INBOX');
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    console.log('STEP D: searching unseen since', since.toISOString());
+    const uids = await client.search({ seen: false, since });
+    console.log('STEP E: search found', uids.length, 'messages');
 
-    try {
-      const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-      const uids = await client.search({ seen: false, since });
-
-      for (const uid of uids) {
-        // Download full source to feed mailparser
+    for (const uid of uids) {
+      try {
+        console.log('STEP F: downloading uid', uid);
         const { source } = await client.download(uid);
-        const parsed = await simpleParser(source);
+        if (!source) {
+          console.warn('WARN: no source stream for uid', uid);
+          skipped++;
+          continue;
+        }
+
+        const parsed = await simpleParser(source).catch((e) => {
+          console.error('MAILPARSE ERROR uid', uid, e?.message || e);
+          skipped++;
+          return null;
+        });
+        if (!parsed) continue;
 
         const subject = parsed.subject || '';
-        // Skip common auto replies / bounces
         if (/auto-?reply|out of office|delivery status notification|mail delivery/i.test(subject)) {
           await client.messageFlagsAdd(uid, ['\\Seen']);
           skipped++;
+          console.log('STEP G: skipped auto/bounce uid', uid);
           continue;
         }
 
@@ -156,46 +155,33 @@ async function fetchUnreadSince({ days = 3 }) {
         const bodyText = text || (html ? String(html).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() : '');
         const inReplyTo = parsed.inReplyTo || '';
         const references = Array.isArray(parsed.references) ? parsed.references.join(' ') : (parsed.references || '');
+        const headers = Object.fromEntries((parsed.headerLines || []).map((h) => [h.key, h.line]));
 
-        // Store raw header lines as a simple key:value object
-        let headers = {};
-        if (parsed.headerLines?.length) {
-          headers = Object.fromEntries(parsed.headerLines.map((h) => [h.key, h.line]));
-        }
-
-        await saveInbound({
-          from,
-          to,
-          subject,
-          bodyText,
-          headers,
-          messageId,
-          inReplyTo,
-          references
+        const intent = await saveInbound({
+          from, to, subject, bodyText, headers, messageId, inReplyTo, references
         });
 
         await client.messageFlagsAdd(uid, ['\\Seen']);
         processed++;
+        console.log('STEP H: saved uid', uid, 'intent=', intent);
+      } catch (innerErr) {
+        console.error('UID ERROR', uid, innerErr?.message || innerErr);
+        // do not throw; continue to next message
+        skipped++;
       }
-    } finally {
-      lock.release();
     }
   } finally {
-    try { await client.logout(); } catch {}
+    lock.release();
+    await client.logout();
+    console.log('STEP Z: released lock & logged out');
   }
 
   return { processed, skipped };
 }
 
-/**
- * ---- API Handler -----------------------------------------------------------
- */
-
 export default async function handler(req, res) {
   try {
-    if (req.method !== 'GET' && req.method !== 'POST') {
-      return res.status(405).json({ error: 'Method not allowed' });
-    }
+    if (req.method !== 'GET' && req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
     checkEnv();
     checkCronSecret(req);
@@ -208,16 +194,9 @@ export default async function handler(req, res) {
     const finished = new Date().toISOString();
     console.log(`✅ /api/cron/inbox finished @ ${finished} | processed=${processed} skipped=${skipped}`);
 
-    return res.status(200).json({
-      ok: true,
-      processed,
-      skipped,
-      started,
-      finished
-    });
+    return res.status(200).json({ ok: true, processed, skipped, started, finished });
   } catch (err) {
-    const msg = err?.message || String(err);
-    console.error('❌ inbox cron error:', msg);
-    return res.status(500).json({ ok: false, error: msg });
+    console.error('❌ inbox cron error:', err?.stack || err?.message || String(err));
+    return res.status(500).json({ ok: false, error: err?.message || String(err) });
   }
 }
