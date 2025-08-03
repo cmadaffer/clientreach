@@ -1,5 +1,4 @@
 // pages/api/contacts.js
-
 import { createClient } from '@supabase/supabase-js';
 import axios from 'axios';
 
@@ -22,21 +21,18 @@ export default async function handler(req, res) {
     }
 
     const { access_token, account_id } = tokenRows[0];
-
     if (!account_id) {
       return res.status(500).json({ error: 'FreshBooks account_id missing in database' });
     }
 
-    const response = await axios.get(
-      `https://api.freshbooks.com/accounting/account/${account_id}/users/clients`,
-      {
-        headers: {
-          Authorization: `Bearer ${access_token}`,
-          'Api-Version': 'alpha',
-          'Content-Type': 'application/json',
-        },
-      }
-    );
+    const url = `https://api.freshbooks.com/accounting/account/${account_id}/users/clients`;
+    const response = await axios.get(url, {
+      headers: {
+        Authorization: `Bearer ${access_token}`,
+        'Api-Version': 'alpha',
+        'Content-Type': 'application/json',
+      },
+    });
 
     const clients = response.data?.response?.result?.clients || [];
     return res.status(200).json({ contacts: clients });
