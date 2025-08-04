@@ -1,20 +1,16 @@
 // pages/api/cron/inbox.js
-// Full inbox poller: connects to Gmail via IMAP (App Password), parses unread messages,
-// classifies intent, stores in Supabase, logs why items are skipped, and returns a summary.
+// Gmail IMAP poller (fetch-based): robust for Gmail where download() may not return a source.
+// Modes:
+//   - default: unread + last 3 days + skip autos/bounces
+//   - ?debug=1: include read + last 14 days + do NOT skip autos/bounces (for validation)
 
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import { createClient } from '@supabase/supabase-js';
 
-/* ===========================
-   Configuration
-=========================== */
-const DAYS_LOOKBACK = 3; // change to 14 if you want a longer window
-const LOG_PREFIX = '📬 INBOX';
+const LOG = '📬 INBOX';
 
-/* ===========================
-   Env & Clients
-=========================== */
+// ---------- ENV / CLIENTS ----------
 const REQUIRED_ENVS = [
   'NEXT_PUBLIC_SUPABASE_URL',
   'SUPABASE_SERVICE_ROLE_KEY',
@@ -25,12 +21,8 @@ const REQUIRED_ENVS = [
 ];
 
 function assertEnv() {
-  const missing = REQUIRED_ENVS.filter(
-    (k) => !process.env[k] || String(process.env[k]).trim() === ''
-  );
-  if (missing.length) {
-    throw new Error(`Missing environment variables: ${missing.join(', ')}`);
-  }
+  const missing = REQUIRED_ENVS.filter(k => !process.env[k] || String(process.env[k]).trim() === '');
+  if (missing.length) throw new Error(`Missing environment variables: ${missing.join(', ')}`);
 }
 
 const supabase = createClient(
@@ -38,19 +30,15 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// Optional: protect the route so only your cron caller can trigger it
+// Optional shared secret (set CRON_SECRET in Render and header X-Cron-Secret in your external cron)
 function checkCronSecret(req) {
   const secret = process.env.CRON_SECRET;
-  if (!secret) return; // not enforced unless set
+  if (!secret) return;
   const header = req.headers['x-cron-secret'];
-  if (header !== secret) {
-    throw new Error('Unauthorized cron caller (bad X-Cron-Secret)');
-  }
+  if (header !== secret) throw new Error('Unauthorized cron caller (bad X-Cron-Secret)');
 }
 
-/* ===========================
-   Helpers: intent & threading
-=========================== */
+// ---------- INTENT / THREAD ----------
 function classifyIntent(text) {
   const t = (text || '').toLowerCase();
   if (/stop|unsubscribe|remove me|opt[- ]?out|no longer/i.test(t)) return 'unsubscribe';
@@ -72,11 +60,7 @@ function deriveThreadKey({ subject, inReplyTo, references }) {
   return s || null;
 }
 
-/* ===========================
-   Persistence
-=========================== */
-
-// Duplicate guard (by RFC822 Message-ID)
+// ---------- PERSISTENCE ----------
 async function alreadySaved(messageId) {
   if (!messageId) return false;
   const { data, error } = await supabase
@@ -85,30 +69,19 @@ async function alreadySaved(messageId) {
     .eq('message_id', messageId)
     .maybeSingle();
   if (error) {
-    console.warn(`${LOG_PREFIX} WARN duplicate check failed:`, error.message || error);
+    console.warn(`${LOG} duplicate-check failed:`, error.message || error);
     return false;
   }
   return Boolean(data?.id);
 }
 
-async function saveInbound({
-  from,
-  to,
-  subject,
-  bodyText,
-  headers,
-  messageId,
-  inReplyTo,
-  references
-}) {
-  // Duplicate guard
+async function saveInbound({ from, to, subject, bodyText, headers, messageId, inReplyTo, references }) {
   if (await alreadySaved(messageId)) {
-    console.log(`${LOG_PREFIX} duplicate message_id, skipping save`, { messageId });
+    console.log(`${LOG} duplicate message_id, skipping save`, { messageId });
     return { id: null, intent: 'duplicate' };
   }
 
-  const combined = `${subject || ''}\n${bodyText || ''}`;
-  const intent = classifyIntent(combined);
+  const intent = classifyIntent(`${subject || ''}\n${bodyText || ''}`);
   const thread_key = deriveThreadKey({ subject, inReplyTo, references });
 
   const { data, error } = await supabase
@@ -122,7 +95,7 @@ async function saveInbound({
       body: bodyText || null,
       message_id: messageId || null,
       in_reply_to: inReplyTo || null,
-      msg_references: references || null, // IMPORTANT: "msg_references" (not "references")
+      msg_references: references || null, // NOTE: msg_references (not "references")
       thread_key,
       intent,
       meta: headers || {},
@@ -141,10 +114,8 @@ async function saveInbound({
   return { id: data.id, intent };
 }
 
-/* ===========================
-   IMAP Fetch Logic
-=========================== */
-async function fetchUnreadSince({ days = DAYS_LOOKBACK }) {
+// ---------- IMAP (FETCH-BASED) ----------
+async function fetchMail({ includeSeen, lookbackDays, skipAutos }) {
   const client = new ImapFlow({
     host: process.env.IMAP_HOST,
     port: Number(process.env.IMAP_PORT || 993),
@@ -157,59 +128,57 @@ async function fetchUnreadSince({ days = DAYS_LOOKBACK }) {
   let skipped = 0;
 
   await client.connect();
-  console.log(`${LOG_PREFIX} STEP B: Connected to IMAP`);
+  console.log(`${LOG} Connected to IMAP`);
   const lock = await client.getMailboxLock('INBOX');
-  console.log(`${LOG_PREFIX} STEP C: Locked INBOX`);
+  console.log(`${LOG} Locked INBOX`);
 
   try {
-    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-    console.log(`${LOG_PREFIX} STEP D: Searching unseen since ${since.toISOString()}`);
-    const uids = await client.search({ seen: false, since });
-    console.log(`${LOG_PREFIX} STEP E: Search found ${uids.length} message(s)`);
+    const since = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000);
+    const searchQuery = includeSeen ? { since } : { seen: false, since };
+    console.log(`${LOG} Searching with`, searchQuery);
 
-    for (const uid of uids) {
+    const uids = await client.search(searchQuery);
+    console.log(`${LOG} Found ${uids.length} message(s)`);
+
+    if (!uids.length) return { processed, skipped };
+
+    // FETCH with source: true (reliable for Gmail)
+    const fetcher = client.fetch({ uid: uids }, { source: true, envelope: true, flags: true, internalDate: true });
+
+    for await (const msg of fetcher) {
       try {
-        console.log(`${LOG_PREFIX} STEP F: Downloading uid ${uid}`);
-        const { source } = await client.download(uid);
-
-        if (!source) {
-          console.warn(`${LOG_PREFIX} SKIP: no source stream for uid`, uid);
+        if (!msg.source) {
+          console.warn(`${LOG} SKIP: no source stream for uid`, msg.uid);
           skipped++;
           continue;
         }
 
-        const parsed = await simpleParser(source).catch((e) => {
-          console.error(`${LOG_PREFIX} MAILPARSE ERROR uid ${uid}:`, e?.message || e);
+        const parsed = await simpleParser(msg.source).catch((e) => {
+          console.error(`${LOG} parse error uid ${msg.uid}:`, e?.message || e);
           skipped++;
           return null;
         });
         if (!parsed) continue;
 
         const subject = parsed.subject || '';
-        const messageId = parsed.messageId || '';
         const from = parsed.from?.text || '';
-        const to =
-          parsed.to?.text ||
-          parsed.headers?.get?.('delivered-to') ||
-          '';
+        const messageId = parsed.messageId || '';
+        const to = parsed.to?.text || parsed.headers?.get?.('delivered-to') || '';
         const text = parsed.text || '';
         const html = parsed.html || '';
-        const bodyText =
-          text || (html ? String(html).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() : '');
+        const bodyText = text || (html ? String(html).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() : '');
         const inReplyTo = parsed.inReplyTo || '';
-        const references = Array.isArray(parsed.references)
-          ? parsed.references.join(' ')
-          : parsed.references || '';
-        const headers =
-          Object.fromEntries((parsed.headerLines || []).map((h) => [h.key, h.line])) || {};
+        const references = Array.isArray(parsed.references) ? parsed.references.join(' ') : (parsed.references || '');
+        const headers = Object.fromEntries((parsed.headerLines || []).map(h => [h.key, h.line])) || {};
 
-        // Skip common auto-replies and bounces, but log + optionally audit-save
-        if (/auto-?reply|out of office|delivery status notification|mail delivery/i.test(subject)) {
-          await client.messageFlagsAdd(uid, ['\\Seen']);
+        console.log(`${LOG} UID ${msg.uid} FROM "${from}" SUBJECT "${subject}"`);
+
+        const looksAuto = /auto-?reply|out of office|delivery status notification|mail delivery/i.test(subject);
+        if (skipAutos && looksAuto) {
+          await client.messageFlagsAdd(msg.uid, ['\\Seen']);
           skipped++;
-          console.log(`${LOG_PREFIX} SKIP auto/bounce:`, { uid, subject, from });
-
-          // OPTIONAL: store skipped autos for audit
+          console.log(`${LOG} SKIPPED AUTO/BOUNCE uid ${msg.uid}`);
+          // Optional audit row:
           try {
             await supabase.from('inbox_messages').insert({
               channel: 'email',
@@ -221,58 +190,48 @@ async function fetchUnreadSince({ days = DAYS_LOOKBACK }) {
               message_id: messageId || null,
               status: 'skipped_auto'
             });
-          } catch (auditErr) {
-            console.warn(`${LOG_PREFIX} save skipped_auto failed:`, auditErr?.message || auditErr);
+          } catch (e) {
+            console.warn(`${LOG} save skipped_auto failed:`, e?.message || e);
           }
-
           continue;
         }
 
-        // Save inbound & classify
         const { intent } = await saveInbound({
-          from,
-          to,
-          subject,
-          bodyText,
-          headers,
-          messageId,
-          inReplyTo,
-          references
+          from, to, subject, bodyText, headers, messageId, inReplyTo, references
         });
 
-        // Mark seen so we don't re-process
-        await client.messageFlagsAdd(uid, ['\\Seen']);
+        await client.messageFlagsAdd(msg.uid, ['\\Seen']);
         processed++;
-        console.log(`${LOG_PREFIX} STEP H: saved uid ${uid} intent=${intent}`);
+        console.log(`${LOG} SAVED uid ${msg.uid} intent=${intent}`);
       } catch (loopErr) {
-        console.error(`${LOG_PREFIX} UID ERROR ${uid}:`, loopErr?.message || loopErr);
+        console.error(`${LOG} UID ERROR ${msg.uid}:`, loopErr?.message || loopErr);
         skipped++;
-        // do not throw; continue processing the rest
       }
     }
   } finally {
     lock.release();
     await client.logout();
-    console.log(`${LOG_PREFIX} STEP Z: Released lock & logged out`);
+    console.log(`${LOG} Released lock & logged out`);
   }
 
   return { processed, skipped };
 }
 
-/* ===========================
-   API Handler
-=========================== */
+// ---------- API HANDLER ----------
 export default async function handler(req, res) {
   try {
-    if (req.method !== 'GET' && req.method !== 'POST') {
-      return res.status(405).json({ error: 'Method not allowed' });
-    }
+    if (req.method !== 'GET' && req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
     assertEnv();
     checkCronSecret(req);
 
-    const started = new Date().toISOString();
-    console.log(`${LOG_PREFIX} started @ ${started}`, {
+    const debug = String(req.query.debug || '').trim() === '1';
+    const includeSeen = debug;           // debug mode includes read mail
+    const lookbackDays = debug ? 14 : 3; // longer window in debug
+    const skipAutos = !debug;            // do not skip autos in debug
+
+    console.log(`${LOG} started`, {
+      debug, includeSeen, lookbackDays, skipAutos,
       host: process.env.IMAP_HOST,
       port: Number(process.env.IMAP_PORT || 993),
       secure: String(process.env.IMAP_SECURE ?? 'true') !== 'false',
@@ -280,14 +239,13 @@ export default async function handler(req, res) {
       passLen: process.env.IMAP_PASS ? String(process.env.IMAP_PASS).length : 0
     });
 
-    const { processed, skipped } = await fetchUnreadSince({ days: DAYS_LOOKBACK });
+    const { processed, skipped } = await fetchMail({ includeSeen, lookbackDays, skipAutos });
 
-    const finished = new Date().toISOString();
-    console.log(`${LOG_PREFIX} finished @ ${finished} | processed=${processed} skipped=${skipped}`);
-
-    return res.status(200).json({ ok: true, processed, skipped, started, finished });
+    const body = { ok: true, processed, skipped, debug, includeSeen, lookbackDays, skipAutos, ts: new Date().toISOString() };
+    console.log(`${LOG} done`, body);
+    return res.status(200).json(body);
   } catch (err) {
-    console.error(`${LOG_PREFIX} ERROR:`, err?.stack || err?.message || String(err));
+    console.error(`${LOG} ERROR:`, err?.stack || err?.message || String(err));
     return res.status(500).json({ ok: false, error: err?.message || String(err) });
   }
 }
