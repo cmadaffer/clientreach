@@ -25,27 +25,29 @@ export default async function handler(req, res) {
     await client.connect()
     const lock = await client.getMailboxLock('INBOX')
     try {
-      const sinceDate = new Date(Date.now() - Number(process.env.INBOX_LOOKBACK_DAYS || 1) * 86400000)
-        .toISOString().split('T')[0]
+      const lookbackDays = Number(process.env.INBOX_LOOKBACK_DAYS || 1)
+      const sinceDate = new Date(Date.now() - lookbackDays * 86400000)
+        .toISOString()
+        .split('T')[0]
+
+      // Only unseen since X days
       const uids = await client.search({ seen: false, since: sinceDate })
 
       for await (let msg of client.fetch(uids, { envelope: true, source: true, uid: true })) {
         const parsed = await simpleParser(msg.source)
-        const from    = parsed.from?.text || parsed.from?.value[0]?.address || ''
+        const from = parsed.from?.text || parsed.from?.value[0]?.address || ''
         const subject = parsed.subject || ''
-        const body    = parsed.text || parsed.html || ''
+        const body = parsed.text || parsed.html || ''
+        const created_at = parsed.date?.toISOString() || new Date().toISOString()
 
+        // **Insert** new row, let Supabase generate `id` uuid
         const { error } = await supabase
           .from('inbox_messages')
-          .upsert({
-            id: msg.uid,
-            from_addr: from,
-            subject,
-            body,
-            created_at: parsed.date?.toISOString() || new Date().toISOString()
-          }, { onConflict: 'id' })
+          .insert([{ from_addr: from, subject, body, created_at }])
 
-        if (error) console.error('Supabase upsert error:', error.message)
+        if (error) {
+          console.error('Supabase insert error:', error.message)
+        }
       }
     } finally {
       lock.release()
@@ -58,3 +60,4 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: err.message })
   }
 }
+
