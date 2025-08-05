@@ -30,20 +30,21 @@ export default async function handler(req, res) {
         .toISOString()
         .split('T')[0]
 
-      // Only unseen since X days
+      // Fetch unseen UIDs since the lookback date
       const uids = await client.search({ seen: false, since: sinceDate })
 
       for await (let msg of client.fetch(uids, { envelope: true, source: true, uid: true })) {
         const parsed = await simpleParser(msg.source)
-        const from = parsed.from?.text || parsed.from?.value[0]?.address || ''
-        const subject = parsed.subject || ''
-        const body = parsed.text || parsed.html || ''
-        const created_at = parsed.date?.toISOString() || new Date().toISOString()
+        const from        = parsed.from?.text || parsed.from?.value[0]?.address || ''
+        const subject     = parsed.subject || ''
+        const body        = parsed.text || parsed.html || ''
+        const created_at  = parsed.date?.toISOString() || new Date().toISOString()
+        const direction   = 'inbound'  // satisfy NOT NULL
 
-        // **Insert** new row, let Supabase generate `id` uuid
+        // Insert into Supabase (uuid `id` is auto-generated)
         const { error } = await supabase
           .from('inbox_messages')
-          .insert([{ from_addr: from, subject, body, created_at }])
+          .insert([{ from_addr: from, subject, body, created_at, direction }])
 
         if (error) {
           console.error('Supabase insert error:', error.message)
@@ -52,6 +53,7 @@ export default async function handler(req, res) {
     } finally {
       lock.release()
     }
+
     await client.logout()
     return res.status(200).json({ status: 'completed' })
   } catch (err) {
