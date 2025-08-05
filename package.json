@@ -10,9 +10,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.6",
-    "axios": "^1.6.7",
-    "imapflow": "^1.0.164",
-    "mailparser": "^3.6.7",
+    "googleapis": "^121.0.0",
     "next": "14.1.4",
     "next-auth": "^4.24.6",
     "nodemailer": "^6.9.13",
