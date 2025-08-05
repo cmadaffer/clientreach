@@ -16,20 +16,17 @@ export default async function handler(req, res) {
   let client;
   let processed = 0;
   let skipped = 0;
+  let emails = [];
 
-  // query flags for ad-hoc debugging
   const q = req.query || {};
   const includeSeen = q.includeSeen === "1" || q.includeSeen === "true";
-  const lookbackDays = Number(q.lookbackDays ?? 3);
-  const debug = q.debug === "1" || q.debug === "true";
+  const lookbackDays = Number(q.lookbackDays ?? 14);
 
   const IMAP_HOST = env("IMAP_HOST", "imap.gmail.com");
   const IMAP_PORT = Number(process.env.IMAP_PORT || 993);
   const IMAP_SECURE = (process.env.IMAP_SECURE ?? "true") !== "false";
   const IMAP_USER = env("IMAP_USER");
   const IMAP_PASS = env("IMAP_PASS") || env("GMAIL_APP_PASSWORD");
-
-  const log = (...args) => debug && console.log("📬", ...args);
 
   try {
     client = new ImapFlow({
@@ -38,90 +35,43 @@ export default async function handler(req, res) {
       secure: IMAP_SECURE,
       auth: { user: IMAP_USER, pass: IMAP_PASS },
       logger: false,
-      // shorter socket timeouts so we don't hang
-      socketTimeout: 60_000,
-      greetingTimeout: 30_000,
-      idleTimeout: 60_000,
-    });
-
-    log("INBOX connect", {
-      host: IMAP_HOST,
-      port: IMAP_PORT,
-      secure: IMAP_SECURE,
-      user: IMAP_USER,
-      passLen: IMAP_PASS?.length || 0,
-      includeSeen,
-      lookbackDays,
+      socketTimeout: 60000,
+      greetingTimeout: 30000,
+      idleTimeout: 60000,
     });
 
     await client.connect();
-    log("Connected");
+    await client.mailboxOpen("INBOX", { readOnly: true, lock: true });
 
-    // Lock mailbox for safe concurrent access
-    await client.mailboxOpen("INBOX", { readOnly: false, lock: true });
-    log("Locked INBOX");
+    const since = new Date(Date.now() - lookbackDays * 86400000);
+    const searchCriteria = includeSeen ? { since } : { seen: false, since };
+    const uids = await client.search(searchCriteria);
 
-    const since = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000);
-    const searchCriteria = includeSeen
-      ? { since }
-      : { seen: false, since };
-
-    log("Searching", searchCriteria);
-    const uids = (await client.search(searchCriteria)) || [];
-    log("Search result count", uids.length);
-
-    // Nothing to do
-    if (uids.length === 0) {
-      return res.status(200).json({
-        ok: true,
-        processed,
-        skipped,
-        started,
-        finished: new Date().toISOString(),
-        note: "no messages matched",
-      });
+    if (!uids.length) {
+      return res.status(200).json({ ok: true, emails: [], note: "No messages" });
     }
 
-    // Fetch minimal headers first (guards against empty/closed streams)
     for await (const msg of client.fetch(uids, {
       uid: true,
       envelope: true,
-      flags: true,
       internalDate: true,
-      source: true, // raw stream (may be missing on some servers)
+      source: true,
     })) {
-      try {
-        const uid = msg.uid;
-        const env = msg.envelope || {};
-        const subject = env.subject || "";
-        const from =
-          (env.from && env.from.map(a => a.address || a.name).join(", ")) || "";
-        const date = msg.internalDate || new Date();
-
-        // Some servers provide msg.source as null if message is too large
-        if (!msg.source) {
-          skipped++;
-          log("SKIP: no source stream for uid", uid);
-          continue;
-        }
-
-        // Parse safely
-        const parsed = await safeParse(msg.source);
-        processed++;
-
-        log(`Parsed uid ${uid}`, {
-          from: parsed.from?.text,
-          subject: parsed.subject,
-          date,
-        });
-
-        // TODO: Save to Supabase (kept optional & safe)
-        // await saveToSupabase({ uid, from, subject, date, html: parsed.html, text: parsed.text });
-
-      } catch (err) {
+      if (!msg.source) {
         skipped++;
-        console.error("INBOX item error:", err?.message || err);
+        continue;
       }
+
+      const parsed = await safeParse(msg.source);
+      emails.push({
+        uid: msg.uid,
+        from: parsed.from?.text || "",
+        subject: parsed.subject || "",
+        date: msg.internalDate,
+        preview: parsed.text?.slice(0, 300) || "",
+      });
+
+      processed++;
     }
 
     return res.status(200).json({
@@ -130,19 +80,12 @@ export default async function handler(req, res) {
       skipped,
       started,
       finished: new Date().toISOString(),
+      emails,
     });
   } catch (err) {
     console.error("INBOX ERROR:", err);
-    return res.status(200).json({
-      ok: true,
-      error: String(err),
-      processed,
-      skipped,
-      started,
-      finished: new Date().toISOString(),
-    });
+    return res.status(500).json({ ok: false, error: String(err) });
   } finally {
-    // Always try to release lock and logout
     try {
       if (client?.mailbox) await client.mailboxClose();
     } catch {}
@@ -155,8 +98,7 @@ export default async function handler(req, res) {
 async function safeParse(streamOrBuffer) {
   try {
     return await simpleParser(streamOrBuffer);
-  } catch (e) {
-    // Fall back to empty parsed object
+  } catch {
     return { subject: "", text: "", html: "", from: { text: "" } };
   }
 }
