@@ -1,10 +1,9 @@
 // pages/api/cron/inbox-process.js
 
 import { ImapFlow } from 'imapflow'
-import { supabase } from '../../lib/supabaseClient'
+import { supabase } from '../../../lib/supabaseClient'   // ← updated path
 
 export default async function handler(req, res) {
-  // Only allow GET (or scheduled) calls
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method not allowed' })
   }
@@ -17,37 +16,30 @@ export default async function handler(req, res) {
       user: process.env.IMAP_USER,
       pass: process.env.IMAP_PASS,
     },
-    // Increase timeouts
-    connectTimeout: 30000,   // 30s to connect
-    socketTimeout: 120000,   // 2m for socket ops
+    connectTimeout: 30000,
+    socketTimeout: 120000,
   })
 
   try {
     await client.connect()
-    // Select INBOX
     let lock = await client.getMailboxLock('INBOX')
     try {
-      // Fetch unseen messages since last run…
-      for await (let msg of client.fetch('1:*', { 
-        envelope: true, 
-        source: true 
-      })) {
+      for await (let msg of client.fetch('1:*', { envelope: true, source: true })) {
         const fromAddr = msg.envelope.from?.[0]?.address || ''
         const subject  = msg.envelope.subject || ''
-        const body      = msg.source.toString('utf8')  // or parse MIME properly
+        const body     = msg.source.toString('utf8')
 
-        // Upsert into Supabase
         const { error } = await supabase
           .from('inbox_messages')
           .insert({ from_addr: fromAddr, subject, body })
-          .onConflict('id')  // assuming you set id = msg.uid somewhere
+          .onConflict('id')
         if (error) console.error('Supabase insert error:', error.message)
       }
     } finally {
       lock.release()
     }
   } catch (err) {
-    console.error('IMAP fetch error:', err.code || err.message, err)
+    console.error('IMAP fetch error:', err.code || err.message)
   } finally {
     try { await client.logout() } catch {}
   }
