@@ -8,7 +8,6 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' })
   }
 
-  // 1) OAuth2 client
   const oAuth2 = new google.auth.OAuth2(
     process.env.GMAIL_CLIENT_ID,
     process.env.GMAIL_CLIENT_SECRET
@@ -18,7 +17,6 @@ export default async function handler(req, res) {
   const gmail = google.gmail({ version: 'v1', auth: oAuth2 })
 
   try {
-    // 2) List 50 newest inbox messages
     const listRes = await gmail.users.messages.list({
       userId: process.env.GMAIL_USER,
       maxResults: 50,
@@ -26,7 +24,6 @@ export default async function handler(req, res) {
     })
     const messages = listRes.data.messages || []
 
-    // 3) Fetch each message, extract text/plain body
     for (let { id } of messages) {
       const msgRes = await gmail.users.messages.get({
         userId: process.env.GMAIL_USER,
@@ -34,7 +31,6 @@ export default async function handler(req, res) {
         format: 'full'
       })
 
-      // Normalize headers
       const headers = (msgRes.data.payload.headers || []).reduce((acc, h) => {
         acc[h.name.toLowerCase()] = h.value
         return acc
@@ -44,14 +40,12 @@ export default async function handler(req, res) {
       const subject = headers.subject || ''
       let body       = ''
 
-      // Find plain text part
       const parts = msgRes.data.payload.parts || []
       const plain = parts.find(p => p.mimeType === 'text/plain')
       if (plain?.body?.data) {
         body = Buffer.from(plain.body.data, 'base64').toString('utf8')
       }
 
-      // 4) Upsert into Supabase
       const { error } = await supabase
         .from('inbox_messages')
         .upsert(
@@ -67,3 +61,4 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: err.message })
   }
 }
+
