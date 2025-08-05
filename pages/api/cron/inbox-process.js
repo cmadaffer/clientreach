@@ -1,9 +1,8 @@
-// pages/api/cron/inbox-process.js
-
 import { ImapFlow } from 'imapflow'
 import { simpleParser } from 'mailparser'
 import { supabase } from '../../../lib/supabaseClient'
 
+// Cron handler: fetch unseen emails, upsert into Supabase, mark as seen
 export default async function handler(req, res) {
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method not allowed' })
@@ -25,35 +24,42 @@ export default async function handler(req, res) {
     await client.connect()
     const lock = await client.getMailboxLock('INBOX')
     try {
+      // Compute the since-date filter
       const lookbackDays = Number(process.env.INBOX_LOOKBACK_DAYS || 1)
       const sinceDate = new Date(Date.now() - lookbackDays * 86400000)
         .toISOString()
         .split('T')[0]
 
-      // Fetch unseen UIDs since the lookback date
+      // Search for unseen messages since the given date
       const uids = await client.search({ seen: false, since: sinceDate })
 
       for await (let msg of client.fetch(uids, { envelope: true, source: true, uid: true })) {
         const parsed = await simpleParser(msg.source)
-        const from        = parsed.from?.text || parsed.from?.value[0]?.address || ''
-        const subject     = parsed.subject || ''
-        const body        = parsed.text || parsed.html || ''
-        const created_at  = parsed.date?.toISOString() || new Date().toISOString()
-        const direction   = 'inbound'  // satisfy NOT NULL
+        const from       = parsed.from?.text || parsed.from?.value[0]?.address || ''
+        const subject    = parsed.subject || ''
+        const body       = parsed.text || parsed.html || ''
+        const created_at = parsed.date?.toISOString() || new Date().toISOString()
+        const direction  = 'inbound'
+        // Use Gmail message-id if available, else fallback to UID as string
+        const msg_id     = parsed.messageId || msg.envelope?.messageId || String(msg.uid)
 
-        // Insert into Supabase (uuid `id` is auto-generated)
-        const { error } = await supabase
+        // Upsert into Supabase to avoid duplicates on msg_id
+        const { error: upsertError } = await supabase
           .from('inbox_messages')
-          .insert([{ from_addr: from, subject, body, created_at, direction }])
-
-        if (error) {
-          console.error('Supabase insert error:', error.message)
+          .upsert(
+            [{ msg_id, from_addr: from, subject, body, created_at, direction }],
+            { onConflict: 'msg_id' }
+          )
+        if (upsertError) {
+          console.error('Supabase upsert error:', upsertError.message)
         }
+
+        // Mark the message as seen so it won’t be fetched again
+        await client.messageFlagsAdd(msg.uid, ['\\Seen'])
       }
     } finally {
       lock.release()
     }
-
     await client.logout()
     return res.status(200).json({ status: 'completed' })
   } catch (err) {
