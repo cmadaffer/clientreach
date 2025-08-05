@@ -1,68 +1,80 @@
 import { useEffect, useState } from "react";
 
 export default function InboxPage() {
-  const [messages, setMessages] = useState([]);
+  const [emails, setEmails] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState(null);
 
   useEffect(() => {
     fetch("/api/cron/inbox-list")
       .then((res) => res.json())
       .then((data) => {
-        setMessages(data.messages || []);
-        setLoading(false);
+        // assuming data.messages contains parsed emails with html/text
+        setEmails(data.messages || []);
       })
-      .catch(() => setLoading(false));
+      .catch((err) => console.error("Failed to load inbox:", err))
+      .finally(() => setLoading(false));
   }, []);
 
   return (
     <div className="flex h-screen bg-gray-100 font-sans">
       {/* Sidebar */}
-      <div className="w-64 bg-white shadow-md flex flex-col p-4">
-        <h2 className="text-xl font-bold mb-6">ClientReach</h2>
-        <nav className="space-y-3">
-          <button className="text-left px-3 py-2 rounded bg-gray-200 font-medium">Inbox</button>
-          <button className="text-left px-3 py-2 rounded hover:bg-gray-100">Starred</button>
-          <button className="text-left px-3 py-2 rounded hover:bg-gray-100">Sent</button>
-          <button className="text-left px-3 py-2 rounded hover:bg-gray-100">Trash</button>
-        </nav>
-      </div>
+      <aside className="w-1/4 bg-white shadow-md overflow-y-auto">
+        <h2 className="p-4 text-xl font-bold border-b">Inbox</h2>
+        {loading ? (
+          <p className="p-4 text-gray-500">Loading…</p>
+        ) : (
+          emails.map((email) => (
+            <button
+              key={email.uid}
+              onClick={() => setSelected(email)}
+              className={`w-full text-left px-4 py-3 border-b hover:bg-gray-50 transition ${
+                selected?.uid === email.uid ? "bg-gray-200" : ""
+              }`}
+            >
+              <span className="block font-medium truncate">{email.from}</span>
+              <span className="block text-sm text-gray-600 truncate">{email.subject}</span>
+              <span className="block text-xs text-gray-400">
+                {new Date(email.date).toLocaleString()}
+              </span>
+            </button>
+          ))
+        )}
+      </aside>
 
-      {/* Main Content */}
-      <div className="flex-1 flex flex-col">
-        {/* Top Bar */}
-        <div className="bg-white px-6 py-4 shadow flex items-center justify-between">
-          <input
-            type="text"
-            placeholder="Search mail"
-            className="w-1/2 px-4 py-2 border rounded-md focus:outline-none focus:ring"
-          />
-        </div>
+      {/* Main Pane */}
+      <section className="flex-1 flex flex-col">
+        {/* Header */}
+        <header className="bg-white px-6 py-4 shadow flex items-center justify-between">
+          <h3 className="text-lg font-semibold">
+            {selected ? selected.subject : "Select a message"}
+          </h3>
+          {selected && (
+            <button
+              onClick={() => setSelected(null)}
+              className="text-sm text-blue-600 hover:underline"
+            >
+              Clear
+            </button>
+          )}
+        </header>
 
-        {/* Message List */}
-        <div className="flex-1 overflow-y-auto">
-          {loading ? (
-            <div className="p-6 text-gray-500">Loading messages...</div>
-          ) : messages.length === 0 ? (
-            <div className="p-6 text-gray-500">No messages found.</div>
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto p-6 bg-white">
+          {selected ? (
+            selected.html ? (
+              <div
+                className="prose max-w-none"
+                dangerouslySetInnerHTML={{ __html: selected.html }}
+              />
+            ) : (
+              <pre className="whitespace-pre-wrap">{selected.text}</pre>
+            )
           ) : (
-            <ul className="divide-y">
-              {messages.map((msg, i) => (
-                <li key={i} className="bg-white hover:bg-gray-50 px-6 py-4 cursor-pointer">
-                  <div className="flex justify-between items-center">
-                    <div className="flex flex-col">
-                      <span className="font-medium">{msg.from || "Unknown Sender"}</span>
-                      <span className="text-sm text-gray-600">{msg.subject || "(No subject)"}</span>
-                    </div>
-                    <div className="text-sm text-gray-500 whitespace-nowrap">
-                      {new Date(msg.date).toLocaleDateString()}
-                    </div>
-                  </div>
-                </li>
-              ))}
-            </ul>
+            <p className="text-gray-500">No message selected.</p>
           )}
         </div>
-      </div>
+      </section>
     </div>
   );
 }
