@@ -1,6 +1,7 @@
 // pages/api/cron/inbox-process.js
 
-import { google } from 'googleapis'
+import { ImapFlow } from 'imapflow'
+import { simpleParser } from 'mailparser'
 import { supabase } from '../../../lib/supabaseClient'
 
 export default async function handler(req, res) {
@@ -8,59 +9,71 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' })
   }
 
-  const oAuth2 = new google.auth.OAuth2(
-    process.env.GMAIL_CLIENT_ID,
-    process.env.GMAIL_CLIENT_SECRET
-  )
-  oAuth2.setCredentials({ refresh_token: process.env.GMAIL_REFRESH_TOKEN })
-
-  const gmail = google.gmail({ version: 'v1', auth: oAuth2 })
+  // Build the IMAP client
+  const client = new ImapFlow({
+    host: process.env.IMAP_HOST,
+    port: Number(process.env.IMAP_PORT || 993),
+    secure: true,
+    auth: {
+      user: process.env.IMAP_USER,
+      pass: process.env.IMAP_PASS,
+    },
+    connectTimeout: 30000,
+    socketTimeout: 60000,
+  })
 
   try {
-    const listRes = await gmail.users.messages.list({
-      userId: process.env.GMAIL_USER,
-      maxResults: 50,
-      q: 'in:inbox'
-    })
-    const messages = listRes.data.messages || []
+    await client.connect()
 
-    for (let { id } of messages) {
-      const msgRes = await gmail.users.messages.get({
-        userId: process.env.GMAIL_USER,
-        id,
-        format: 'full'
+    // Open INBOX in read-only mode
+    let lock = await client.getMailboxLock('INBOX')
+    try {
+      // Fetch UNSEEN messages from the last X days
+      const lookback = Number(process.env.INBOX_LOOKBACK_DAYS || 1)
+      const since = new Date(Date.now() - lookback * 24 * 60 * 60 * 1000)
+        .toISOString()
+        .split('T')[0]
+
+      // Search criteria: unseen & SINCE date
+      const uids = await client.search({
+        seen: false,
+        since,
       })
 
-      const headers = (msgRes.data.payload.headers || []).reduce((acc, h) => {
-        acc[h.name.toLowerCase()] = h.value
-        return acc
-      }, {})
+      for await (let msg of client.fetch(uids, { envelope: true, source: true, uid: true })) {
+        // Parse raw source
+        const parsed = await simpleParser(msg.source)
+        const from    = parsed.from?.text || parsed.from?.value[0]?.address || ''
+        const subject = parsed.subject || ''
+        const body    = parsed.text || parsed.html || ''
 
-      const from    = headers.from    || ''
-      const subject = headers.subject || ''
-      let body       = ''
+        // Upsert into Supabase
+        const { error } = await supabase
+          .from('inbox_messages')
+          .upsert(
+            {
+              id: msg.uid,            // use IMAP UID as primary key
+              from_addr: from,
+              subject,
+              body,
+              created_at: parsed.date?.toISOString() || new Date().toISOString()
+            },
+            { onConflict: 'id' }
+          )
 
-      const parts = msgRes.data.payload.parts || []
-      const plain = parts.find(p => p.mimeType === 'text/plain')
-      if (plain?.body?.data) {
-        body = Buffer.from(plain.body.data, 'base64').toString('utf8')
+        if (error) {
+          console.error('Supabase upsert error:', error.message)
+        }
       }
-
-      const { error } = await supabase
-        .from('inbox_messages')
-        .upsert(
-          { id, from_addr: from, subject, body },
-          { onConflict: 'id' }
-        )
-      if (error) console.error('Supabase upsert error:', error.message)
+    } finally {
+      lock.release()
     }
 
-    return res
-      .status(200)
-      .json({ status: 'completed', fetched: messages.length })
+    await client.logout()
+    return res.status(200).json({ status: 'completed' })
   } catch (err) {
-    console.error('Gmail API error:', err)
+    console.error('IMAP sync error:', err)
+    try { await client.logout() } catch {}
     return res.status(500).json({ error: err.message })
   }
 }
-
