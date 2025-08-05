@@ -1,104 +1,93 @@
 // pages/inbox.js
-import { useState, useEffect } from "react";
+
+import { useState, useEffect } from 'react'
+import { supabase } from '../lib/supabaseClient'
 
 export default function Inbox() {
-  const [messages, setMessages] = useState([]);
-  const [selected, setSelected] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [messages, setMessages] = useState([])
+  const [selectedMessage, setSelectedMessage] = useState(null)
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    fetch("/api/cron/inbox-list")
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.ok && Array.isArray(data.messages)) {
-          setMessages(data.messages);
-          if (data.messages.length) {
-            setSelected(data.messages[0]);
-          }
-        }
-      })
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  }, []);
+    fetchMessages()
+  }, [])
 
-  if (loading) {
-    return <div style={{ padding: 20 }}>Loading your inbox…</div>;
+  async function fetchMessages() {
+    setLoading(true)
+    const { data, error } = await supabase
+      .from('inbox_messages')
+      .select('*')
+      .order('date', { ascending: false })
+
+    if (error) {
+      console.error('Fetch error:', error.message)
+    } else {
+      setMessages(data)
+    }
+    setLoading(false)
   }
 
-  if (!messages.length) {
-    return <div style={{ padding: 20 }}>No messages found.</div>;
+  function formatDate(isoString) {
+    return new Date(isoString).toLocaleString()
   }
 
   return (
-    <div style={{ display: "flex", height: "100vh", fontFamily: "sans-serif" }}>
-      {/* Left pane: message list */}
-      <aside
-        style={{
-          width: "30%",
-          borderRight: "1px solid #ddd",
-          overflowY: "auto",
-          background: "#fafafa",
-        }}
-      >
-        {messages.map((msg) => (
-          <div
-            key={msg.uid}
-            onClick={() => setSelected(msg)}
-            style={{
-              padding: "12px 16px",
-              cursor: "pointer",
-              backgroundColor:
-                selected?.uid === msg.uid ? "#e6f7ff" : "transparent",
-              borderBottom: "1px solid #eee",
-            }}
-          >
-            <div style={{ fontSize: "0.9em", color: "#333" }}>
-              {msg.from}
-            </div>
-            <div style={{ fontWeight: "600", margin: "4px 0" }}>
-              {msg.subject}
-            </div>
-            <div style={{ fontSize: "0.75em", color: "#888" }}>
-              {new Date(msg.date).toLocaleString()}
-            </div>
-          </div>
-        ))}
+    <div className="flex h-screen">
+      {/* Sidebar */}
+      <aside className="w-1/5 border-r p-4 bg-white">
+        <h2 className="text-xl font-bold mb-4">Labels</h2>
+        <ul>
+          <li className="mb-2 cursor-pointer hover:text-blue-600">Inbox</li>
+          <li className="mb-2 cursor-pointer hover:text-blue-600">Sent</li>
+          <li className="mb-2 cursor-pointer hover:text-blue-600">All Mail</li>
+        </ul>
       </aside>
 
-      {/* Right pane: message preview */}
-      <section
-        style={{
-          flexGrow: 1,
-          padding: "24px",
-          overflowY: "auto",
-        }}
-      >
-        {selected && (
-          <>
-            <h1 style={{ marginBottom: 8 }}>{selected.subject}</h1>
-            <div style={{ marginBottom: 16, color: "#555" }}>
-              <div>
-                <strong>From:</strong> {selected.from}
-              </div>
-              <div>
-                <strong>Date:</strong>{" "}
-                {new Date(selected.date).toLocaleString()}
-              </div>
-            </div>
-
-            {/* Render HTML if present, otherwise plain text */}
+      {/* Message List */}
+      <section className="w-1/3 border-r overflow-y-auto bg-gray-50">
+        {loading ? (
+          <p className="p-4">Loading messages…</p>
+        ) : messages.length === 0 ? (
+          <p className="p-4">No messages found.</p>
+        ) : (
+          messages.map(msg => (
             <div
-              style={{ lineHeight: 1.6 }}
-              dangerouslySetInnerHTML={{
-                __html:
-                  selected.html ||
-                  `<pre style="white-space: pre-wrap; font-family:inherit;">${selected.text}</pre>`,
-              }}
-            />
+              key={msg.id}
+              onClick={() => setSelectedMessage(msg)}
+              className={
+                'p-4 border-b cursor-pointer ' +
+                (selectedMessage?.id === msg.id ? 'bg-white' : '')
+              }
+            >
+              <p className="font-semibold">{msg.from}</p>
+              <p className="truncate text-gray-700">{msg.subject}</p>
+              <p className="text-sm text-gray-600">{msg.snippet}</p>
+              <p className="text-xs text-gray-400">{formatDate(msg.date)}</p>
+            </div>
+          ))
+        )}
+      </section>
+
+      {/* Message Detail */}
+      <section className="flex-1 p-6 overflow-y-auto bg-white">
+        {selectedMessage ? (
+          <>
+            <h3 className="text-2xl font-bold mb-2">
+              {selectedMessage.subject}
+            </h3>
+            <p className="text-sm text-gray-600 mb-4">
+              From: {selectedMessage.from} |{' '}
+              {formatDate(selectedMessage.date)}
+            </p>
+            <div className="prose max-w-none">
+              {selectedMessage.body}
+            </div>
           </>
+        ) : (
+          <p className="text-gray-500">Select a message to view</p>
         )}
       </section>
     </div>
-  );
+)
 }
 
