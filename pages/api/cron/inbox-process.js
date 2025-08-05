@@ -1,48 +1,69 @@
 // pages/api/cron/inbox-process.js
 
-import { ImapFlow } from 'imapflow'
-import { supabase } from '../../../lib/supabaseClient'   // ← updated path
+import { google } from 'googleapis'
+import { supabase } from '../../../lib/supabaseClient'
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method not allowed' })
   }
 
-  const client = new ImapFlow({
-    host: process.env.IMAP_HOST,
-    port: Number(process.env.IMAP_PORT || 993),
-    secure: true,
-    auth: {
-      user: process.env.IMAP_USER,
-      pass: process.env.IMAP_PASS,
-    },
-    connectTimeout: 30000,
-    socketTimeout: 120000,
-  })
+  // 1) OAuth2 client
+  const oAuth2 = new google.auth.OAuth2(
+    process.env.GMAIL_CLIENT_ID,
+    process.env.GMAIL_CLIENT_SECRET
+  )
+  oAuth2.setCredentials({ refresh_token: process.env.GMAIL_REFRESH_TOKEN })
+
+  const gmail = google.gmail({ version: 'v1', auth: oAuth2 })
 
   try {
-    await client.connect()
-    let lock = await client.getMailboxLock('INBOX')
-    try {
-      for await (let msg of client.fetch('1:*', { envelope: true, source: true })) {
-        const fromAddr = msg.envelope.from?.[0]?.address || ''
-        const subject  = msg.envelope.subject || ''
-        const body     = msg.source.toString('utf8')
+    // 2) List 50 newest inbox messages
+    const listRes = await gmail.users.messages.list({
+      userId: process.env.GMAIL_USER,
+      maxResults: 50,
+      q: 'in:inbox'
+    })
+    const messages = listRes.data.messages || []
 
-        const { error } = await supabase
-          .from('inbox_messages')
-          .insert({ from_addr: fromAddr, subject, body })
-          .onConflict('id')
-        if (error) console.error('Supabase insert error:', error.message)
+    // 3) Fetch each message, extract text/plain body
+    for (let { id } of messages) {
+      const msgRes = await gmail.users.messages.get({
+        userId: process.env.GMAIL_USER,
+        id,
+        format: 'full'
+      })
+
+      // Normalize headers
+      const headers = (msgRes.data.payload.headers || []).reduce((acc, h) => {
+        acc[h.name.toLowerCase()] = h.value
+        return acc
+      }, {})
+
+      const from    = headers.from    || ''
+      const subject = headers.subject || ''
+      let body       = ''
+
+      // Find plain text part
+      const parts = msgRes.data.payload.parts || []
+      const plain = parts.find(p => p.mimeType === 'text/plain')
+      if (plain?.body?.data) {
+        body = Buffer.from(plain.body.data, 'base64').toString('utf8')
       }
-    } finally {
-      lock.release()
-    }
-  } catch (err) {
-    console.error('IMAP fetch error:', err.code || err.message)
-  } finally {
-    try { await client.logout() } catch {}
-  }
 
-  res.status(200).json({ status: 'completed' })
+      // 4) Upsert into Supabase
+      const { error } = await supabase
+        .from('inbox_messages')
+        .upsert(
+          { id, from_addr: from, subject, body },
+          { onConflict: 'id' }
+        )
+      if (error) console.error('Supabase upsert error:', error.message)
+    }
+
+    return res.status(200).json({ status: 'completed', fetched: messages.length })
+  } catch (err) {
+    console.error('Gmail API error:', err)
+    return res.status(500).json({ error: err.message })
+  }
 }
