@@ -11,7 +11,7 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.39.6",
     "axios": "^1.6.7",
-    "imapflow": "^3.0.5",
+    "imapflow": "^1.0.193",
     "mailparser": "^3.6.0",
     "next": "14.1.4",
     "next-auth": "^4.24.6",
