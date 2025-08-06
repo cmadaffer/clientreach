@@ -1,3 +1,4 @@
+/* pages/api/inbox-data.js */
 import { supabase } from '../../lib/supabaseClient'
 
 export default async function handler(req, res) {
@@ -12,7 +13,6 @@ export default async function handler(req, res) {
   const to = page * pageSize - 1
 
   try {
-    // Use `distinct('msg_id')` to filter out duplicate messages by ID
     const { data: messages, count, error } = await supabase
       .from('inbox_messages')
       .select('*', { count: 'exact' })
