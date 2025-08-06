@@ -1,3 +1,5 @@
+
+/* pages/inbox.js */
 import { useState } from 'react'
 import useSWR from 'swr'
 
@@ -12,9 +14,11 @@ export default function InboxPage() {
   )
 
   if (error) return <p style={center}>Failed to load messages: {error.message}</p>
-  if (!data)  return <p style={center}>Loading…</p>
+  if (!data) return <p style={center}>Loading…</p>
+  if (data.error) return <p style={center}>Server error: {data.error}</p>
 
-  const { messages, total } = data
+  const messages = Array.isArray(data.messages) ? data.messages : []
+  const total = typeof data.total === 'number' ? data.total : messages.length
   const totalPages = Math.ceil(total / pageSize)
 
   return (
@@ -32,14 +36,16 @@ export default function InboxPage() {
         <tbody>
           {messages.map((m, idx) => (
             <tr
-              key={m.id}
+              key={m.id || idx}
               style={{
                 backgroundColor: idx % 2 === 0 ? '#fafafa' : '#fff',
                 transition: 'background-color 0.2s',
                 cursor: 'pointer',
               }}
               onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e8e8e8')}
-              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = idx % 2 === 0 ? '#fafafa' : '#fff')}
+              onMouseLeave={(e) =>
+                (e.currentTarget.style.backgroundColor = idx % 2 === 0 ? '#fafafa' : '#fff')
+              }
             >
               <td style={td}>{m.from_addr || '—'}</td>
               <td style={td}>{m.subject || '(no subject)'}</td>
@@ -142,4 +148,5 @@ const pageInfo = {
 }
 
 const center = { textAlign: 'center', marginTop: '2rem', color: '#888' }
+
 
