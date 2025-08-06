@@ -1,15 +1,11 @@
-// pages/inbox.js
 import { useState } from 'react'
 import useSWR from 'swr'
 
 const fetcher = (url) => fetch(url).then((res) => res.json())
 
 export default function InboxPage() {
-  // pagination state
   const [page, setPage] = useState(1)
   const pageSize = 10
-
-  // fetch paginated data
   const { data, error } = useSWR(
     `/api/inbox-data?page=${page}&pageSize=${pageSize}`,
     fetcher
@@ -34,8 +30,17 @@ export default function InboxPage() {
           </tr>
         </thead>
         <tbody>
-          {messages.map((m) => (
-            <tr key={m.id}>
+          {messages.map((m, idx) => (
+            <tr
+              key={m.id}
+              style={{
+                backgroundColor: idx % 2 === 0 ? '#fafafa' : '#fff',
+                transition: 'background-color 0.2s',
+                cursor: 'pointer',
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e8e8e8')}
+              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = idx % 2 === 0 ? '#fafafa' : '#fff')}
+            >
               <td style={td}>{m.from_addr || '—'}</td>
               <td style={td}>{m.subject || '(no subject)'}</td>
               <td style={td}>
@@ -56,11 +61,9 @@ export default function InboxPage() {
         >
           ← Prev
         </button>
-
         <span style={pageInfo}>
           Page {page} of {totalPages}
         </span>
-
         <button
           onClick={() => setPage((p) => Math.min(p + 1, totalPages))}
           disabled={page >= totalPages}
@@ -75,7 +78,7 @@ export default function InboxPage() {
 
 // --- inline styles ---
 const container = {
-  maxWidth: 800,
+  maxWidth: 900,
   margin: '2rem auto',
   padding: '0 1rem',
   fontFamily: 'system-ui, sans-serif',
@@ -83,51 +86,60 @@ const container = {
 
 const heading = {
   marginBottom: '1rem',
-  fontSize: '1.8rem',
+  fontSize: '2rem',
   textAlign: 'center',
+  color: '#333',
 }
 
 const table = {
   width: '100%',
   borderCollapse: 'collapse',
-  boxShadow: '0 2px 6px rgba(0,0,0,0.05)',
+  boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
 }
 
 const thead = {
-  background: '#f7f7f7',
+  backgroundColor: '#f0f0f0',
 }
 
 const th = {
   textAlign: 'left',
-  padding: '0.75rem 0.5rem',
-  borderBottom: '1px solid #ddd',
+  padding: '0.75rem',
+  borderBottom: '2px solid #ddd',
+  color: '#555',
+  fontSize: '1rem',
 }
 
 const td = {
-  padding: '0.5rem',
+  padding: '0.75rem',
   borderBottom: '1px solid #eee',
+  color: '#333',
+  fontSize: '0.95rem',
 }
 
 const pagination = {
   display: 'flex',
   justifyContent: 'center',
   alignItems: 'center',
-  gap: '0.75rem',
+  gap: '1rem',
   marginTop: '1.5rem',
 }
 
 const btn = {
-  padding: '0.5rem 1rem',
-  border: '1px solid #ccc',
-  background: '#fff',
+  padding: '0.6rem 1.2rem',
+  border: 'none',
+  background: '#0070f3',
+  color: '#fff',
   cursor: 'pointer',
-  borderRadius: 4,
-  fontSize: '0.9rem',
+  borderRadius: 6,
+  fontSize: '0.95rem',
+  boxShadow: '0 2px 6px rgba(0,0,0,0.15)',
+  transition: 'background-color 0.2s, transform 0.1s',
 }
 
 const pageInfo = {
-  fontSize: '0.9rem',
+  fontSize: '1rem',
+  color: '#555',
 }
 
-const center = { textAlign: 'center', marginTop: '2rem' }
+const center = { textAlign: 'center', marginTop: '2rem', color: '#888' }
 
