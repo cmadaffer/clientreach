@@ -1,4 +1,4 @@
-/* pages/api/cron/inbox-process.js */
+// pages/api/cron/inbox-process.js
 import { ImapFlow } from 'imapflow'
 import { simpleParser } from 'mailparser'
 import { supabase } from '../../../lib/supabaseClient'
@@ -10,7 +10,7 @@ export default async function handler(req, res) {
 
   const client = new ImapFlow({
     host: process.env.IMAP_HOST,
-    port: Number(process.env.IMAP_PORT || 993),
+    port: Number(process.env.IMAP_PORT) || 993,
     secure: true,
     auth: {
       user: process.env.IMAP_USER,
@@ -22,15 +22,15 @@ export default async function handler(req, res) {
     await client.connect()
     const lock = await client.getMailboxLock('INBOX')
 
-    // Fetch all messages
-    for await (let message of client.fetch('UNSEEN', { envelope: true, source: true, flags: true })) { {
+    // Fetch only unseen messages
+    for await (const message of client.fetch('UNSEEN', { envelope: true, source: true, flags: true })) {
       const flags = Array.isArray(message.flags) ? message.flags : []
       if (!flags.includes('\\Seen')) {
         const parsed = await simpleParser(message.source)
-        const msg_id = parsed.messageId || message.envelope.messageId || String(message.uid)
-        const from = parsed.from?.text || message.envelope.from[0].address
-        const subject = parsed.subject
-        const body = parsed.text
+        const msg_id = parsed.messageId || message.envelope?.messageId || String(message.uid)
+        const from = parsed.from?.text || message.envelope.from[0]?.address || ''
+        const subject = parsed.subject || ''
+        const body = parsed.text || ''
         const created_at = parsed.date || new Date()
 
         const { error: upsertError } = await supabase
@@ -39,6 +39,7 @@ export default async function handler(req, res) {
             [{ msg_id, from_addr: from, subject, body, created_at, direction: 'inbound' }],
             { onConflict: 'msg_id' }
           )
+
         if (upsertError && !upsertError.message.includes('no unique or exclusion constraint')) {
           console.error('Supabase upsert error:', upsertError.message)
         }
@@ -52,7 +53,11 @@ export default async function handler(req, res) {
     return res.status(200).json({ status: 'completed' })
   } catch (err) {
     console.error('IMAP sync error:', err)
-    try { await client.logout() } catch {}
+    try {
+      await client.logout()
+    } catch (logoutErr) {
+      console.error('Logout error:', logoutErr)
+    }
     return res.status(500).json({ error: err.message })
   }
 }
