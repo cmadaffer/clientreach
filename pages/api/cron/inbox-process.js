@@ -23,7 +23,7 @@ export default async function handler(req, res) {
     const lock = await client.getMailboxLock('INBOX')
 
     // Fetch all messages
-    for await (let message of client.fetch('UNSEEN', { envelope: true, source: true, flags: true }))) {
+    for await (let message of client.fetch('UNSEEN', { envelope: true, source: true, flags: true })) { {
       const flags = Array.isArray(message.flags) ? message.flags : []
       if (!flags.includes('\\Seen')) {
         const parsed = await simpleParser(message.source)
