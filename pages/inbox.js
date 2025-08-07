@@ -1,4 +1,3 @@
-
 /* pages/inbox.js */
 import { useState } from 'react'
 import useSWR from 'swr'
@@ -42,9 +41,12 @@ export default function InboxPage() {
                 transition: 'background-color 0.2s',
                 cursor: 'pointer',
               }}
-              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e8e8e8')}
+              onMouseEnter={(e) =>
+                (e.currentTarget.style.backgroundColor = '#e8e8e8')
+              }
               onMouseLeave={(e) =>
-                (e.currentTarget.style.backgroundColor = idx % 2 === 0 ? '#fafafa' : '#fff')
+                (e.currentTarget.style.backgroundColor =
+                  idx % 2 === 0 ? '#fafafa' : '#fff')
               }
             >
               <td style={td}>{m.from_addr || '—'}</td>
@@ -148,5 +150,3 @@ const pageInfo = {
 }
 
 const center = { textAlign: 'center', marginTop: '2rem', color: '#888' }
-
-
