@@ -12,15 +12,15 @@ export default async function handler(req, res) {
   const to = page * pageSize - 1
 
   try {
-    const { data: messages = [], count, error } = await supabase
+    const { data: messages = [], error } = await supabase
       .from('inbox_messages')
-      .select('*', { count: 'exact' })
+      .select('*')
       .order('created_at', { ascending: false })
       .range(from, to)
 
     if (error) throw error
 
-    // Deduplicate messages by msg_id in JavaScript
+    // Deduplicate by msg_id in code
     const seen = new Set()
     const deduped = messages.filter((m) => {
       if (seen.has(m.msg_id)) return false
@@ -34,3 +34,4 @@ export default async function handler(req, res) {
     res.status(500).json({ error: err.message })
   }
 }
+
