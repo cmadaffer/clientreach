@@ -23,7 +23,11 @@ export default async function handler(req, res) {
     await client.connect();
     lock = await client.getMailboxLock('INBOX');
 
-    for await (const message of client.fetch('UNSEEN', { envelope: true, source: true, flags: true })) {
+    // Search for unseen message UIDs
+    const uids = await client.search({ seen: false });
+
+    // Fetch only those unseen messages
+    for await (const message of client.fetch(uids, { envelope: true, source: true, flags: true })) {
       const flags = Array.isArray(message.flags) ? message.flags : [];
       if (!flags.includes('\\Seen')) {
         const parsed = await simpleParser(message.source);
@@ -33,6 +37,7 @@ export default async function handler(req, res) {
         const body = parsed.text || '';
         const created_at = parsed.date || new Date();
 
+        // Upsert into Supabase (requires unique constraint on msg_id)
         const { error: upsertError } = await supabase
           .from('inbox_messages')
           .upsert(
@@ -43,6 +48,7 @@ export default async function handler(req, res) {
           console.error('Supabase upsert error:', upsertError.message);
         }
 
+        // Mark as seen on the server
         await client.messageFlagsAdd(message.uid, ['\\Seen']);
       }
     }
@@ -50,7 +56,7 @@ export default async function handler(req, res) {
     res.status(200).json({ status: 'completed' });
   } catch (err) {
     console.error('IMAP sync error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: err.message, stack: err.stack });
   } finally {
     if (lock) lock.release();
     try {
