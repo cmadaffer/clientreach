@@ -20,49 +20,56 @@ export default async function handler(req, res) {
 
   let lock;
   try {
+    // Connect & lock mailbox
     await client.connect();
     lock = await client.getMailboxLock('INBOX');
 
-    // Search for unseen message UIDs
+    // 1) Get unseen UIDs. If none, return fast so the button never hangs.
     const uids = await client.search({ seen: false });
+    if (!uids || uids.length === 0) {
+      return res.status(200).json({ status: 'no-unseen' });
+    }
 
-    // Fetch only those unseen messages
+    // 2) Fetch just those messages
     for await (const message of client.fetch(uids, { envelope: true, source: true, flags: true })) {
       const flags = Array.isArray(message.flags) ? message.flags : [];
-      if (!flags.includes('\\Seen')) {
-        const parsed = await simpleParser(message.source);
-        const msg_id = parsed.messageId || message.envelope?.messageId || String(message.uid);
-        const from = parsed.from?.text || message.envelope.from[0]?.address || '';
-        const subject = parsed.subject || '';
-        const body = parsed.text || '';
-        const created_at = parsed.date || new Date();
+      // Defensive: if server says it's already \Seen, skip
+      if (flags.includes('\\Seen')) continue;
 
-        // Upsert into Supabase (requires unique constraint on msg_id)
-        const { error: upsertError } = await supabase
-          .from('inbox_messages')
-          .upsert(
-            [{ msg_id, from_addr: from, subject, body, created_at, direction: 'inbound' }],
-            { onConflict: 'msg_id' }
-          );
-        if (upsertError && !upsertError.message.includes('no unique or exclusion constraint')) {
-          console.error('Supabase upsert error:', upsertError.message);
-        }
+      const parsed = await simpleParser(message.source);
+      const msg_id =
+        parsed.messageId ||
+        message.envelope?.messageId ||
+        String(message.uid);
 
-        // Mark as seen on the server
-        await client.messageFlagsAdd(message.uid, ['\\Seen']);
+      const from =
+        parsed.from?.text ||
+        message.envelope?.from?.[0]?.address ||
+        '';
+
+      const subject = parsed.subject || '';
+      const body = parsed.text || '';
+      const created_at = parsed.date || new Date();
+
+      // 3) Insert (DB will allow duplicates unless you add a unique index on msg_id)
+      const { error: upsertError } = await supabase
+        .from('inbox_messages')
+        .insert([{ msg_id, from_addr: from, subject, body, created_at, direction: 'inbound' }]);
+      if (upsertError) {
+        // Non-fatal: log and continue
+        console.error('Supabase insert error:', upsertError.message);
       }
+
+      // 4) Mark as seen so we don’t fetch again next time
+      await client.messageFlagsAdd(message.uid, ['\\Seen']);
     }
 
-    res.status(200).json({ status: 'completed' });
+    return res.status(200).json({ status: 'completed' });
   } catch (err) {
     console.error('IMAP sync error:', err);
-    res.status(500).json({ error: err.message, stack: err.stack });
+    return res.status(500).json({ error: err.message });
   } finally {
-    if (lock) lock.release();
-    try {
-      await client.logout();
-    } catch (logoutErr) {
-      console.error('Logout error:', logoutErr);
-    }
+    try { if (lock) lock.release(); } catch {}
+    try { await client.logout(); } catch {}
   }
 }
