@@ -1,6 +1,17 @@
 // pages/api/inbox-data.js
 import { supabase } from '../../lib/supabaseClient';
 
+function roundToMinute(isoOrDate) {
+  try {
+    const d = new Date(isoOrDate);
+    if (isNaN(d)) return '';
+    d.setSeconds(0, 0);
+    return d.toISOString();
+  } catch {
+    return '';
+  }
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
@@ -8,27 +19,25 @@ export default async function handler(req, res) {
   const pageSize = parseInt(req.query.pageSize, 10) || 25;
 
   try {
-    // Pull a bigger window, then dedupe, then paginate in memory.
+    // Pull a decent window, then dedupe and paginate in memory
     const { data: rows = [], error } = await supabase
       .from('inbox_messages')
       .select('*')
       .order('created_at', { ascending: false })
-      .limit(300); // adjust if you want more/less
+      .limit(400);
 
     if (error) throw error;
 
-    // Robust dedupe key priority: msg_id → gm_msgid → composite fallback
-    const makeKey = (m) => {
-      if (m?.msg_id) return `m:${m.msg_id}`;
-      if (m?.gm_msgid) return `g:${m.gm_msgid}`;
-      const d = m?.created_at ? new Date(m.created_at).toISOString() : '';
-      return `f:${m?.from_addr || ''}|s:${m?.subject || ''}|d:${d}`;
-    };
+    // Strong de-dupe: msg_id -> gm_msgid -> from+subject+created_at(minute)
+    const key = (m) =>
+      (m?.msg_id && `m:${m.msg_id}`) ||
+      (m?.gm_msgid && `g:${m.gm_msgid}`) ||
+      `f:${m?.from_addr || ''}|s:${m?.subject || ''}|t:${roundToMinute(m?.created_at)}`;
 
     const map = new Map();
-    for (const m of rows) {
-      const k = makeKey(m);
-      if (!map.has(k)) map.set(k, m); // keep first (newest due to sort)
+    for (const r of rows) {
+      const k = key(r);
+      if (!map.has(k)) map.set(k, r); // keep newest due to ORDER BY DESC
     }
     const deduped = Array.from(map.values());
 
