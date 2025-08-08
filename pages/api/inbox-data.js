@@ -7,12 +7,12 @@ export default async function handler(req, res) {
   }
 
   const page = parseInt(req.query.page, 10) || 1;
-  const pageSize = parseInt(req.query.pageSize, 10) || 10;
+  const pageSize = parseInt(req.query.pageSize, 10) || 25;
   const from = (page - 1) * pageSize;
   const to = page * pageSize - 1;
 
   try {
-    const { data: messages = [], error } = await supabase
+    const { data: rows = [], error } = await supabase
       .from('inbox_messages')
       .select('*')
       .order('created_at', { ascending: false })
@@ -20,15 +20,16 @@ export default async function handler(req, res) {
 
     if (error) throw error;
 
-    // client-side de-dupe by msg_id
+    // de-dupe by msg_id (safety)
     const seen = new Set();
-    const deduped = messages.filter((m) => {
+    const messages = rows.filter((m) => {
+      if (!m || !m.msg_id) return true;
       if (seen.has(m.msg_id)) return false;
       seen.add(m.msg_id);
       return true;
     });
 
-    res.status(200).json({ messages: deduped, total: deduped.length });
+    res.status(200).json({ messages, total: messages.length });
   } catch (err) {
     console.error('Inbox data error:', err);
     res.status(500).json({ error: err.message });
