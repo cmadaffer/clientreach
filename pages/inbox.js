@@ -1,5 +1,5 @@
 // pages/inbox.js
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import useSWR from 'swr';
 
 const fetcher = (url) => fetch(url).then((r) => r.json());
@@ -15,23 +15,51 @@ export default function InboxPage() {
   const [syncing, setSyncing] = useState(false);
   const [syncError, setSyncError] = useState('');
   const [selected, setSelected] = useState(null);
+  const [loadingBody, setLoadingBody] = useState(false);
+
+  const messages = Array.isArray(data?.messages) ? data.messages : [];
+  const total = typeof data?.total === 'number' ? data.total : messages.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+  // When selected changes and has no body, lazy-load it
+  useEffect(() => {
+    const m = selected;
+    if (!m || (m.body && m.body.trim())) return;
+
+    const load = async () => {
+      setLoadingBody(true);
+      try {
+        const res = await fetch(`/api/message-body?msg_id=${encodeURIComponent(m.msg_id)}`);
+        const json = await res.json();
+        const body = json?.body || '';
+        // merge body into local state copy
+        setSelected({ ...m, body });
+      } catch {
+        // ignore
+      } finally {
+        setLoadingBody(false);
+      }
+    };
+    load();
+  }, [selected]);
 
   const handleSync = async () => {
     setSyncing(true);
     setSyncError('');
 
-    // 45s client timeout so the button never “sticks”
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 45000);
+    const timer = setTimeout(() => controller.abort(), 20000); // 20s timeout
 
     try {
-      const res = await fetch('/api/cron/inbox-process?limit=25&days=14', { signal: controller.signal });
+      const res = await fetch('/api/cron/inbox-process?limit=10&days=7', {
+        signal: controller.signal,
+      });
       const text = await res.text();
       clearTimeout(timer);
       if (!res.ok) throw new Error(text || `Sync failed (${res.status})`);
       await mutate();
     } catch (err) {
-      setSyncError(err.name === 'AbortError' ? 'Sync timed out (45s)' : err.message);
+      setSyncError(err.name === 'AbortError' ? 'Sync timed out (20s)' : err.message);
     } finally {
       setSyncing(false);
     }
@@ -41,17 +69,12 @@ export default function InboxPage() {
   if (!data) return <p style={center}>Loading…</p>;
   if (data.error) return <p style={center}>Server error: {data.error}</p>;
 
-  const messages = Array.isArray(data.messages) ? data.messages : [];
-  const total = typeof data.total === 'number' ? data.total : messages.length;
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
-
   const selectedMsg = selected || messages[0] || null;
 
   return (
     <div style={wrap}>
       <div style={headerBar}>
         <h1 style={logo}>ClientReach</h1>
-        <div />
       </div>
 
       <div style={toolbar}>
@@ -64,10 +87,10 @@ export default function InboxPage() {
       <div style={grid}>
         <aside style={listPane}>
           {messages.map((m, idx) => {
-            const active = selectedMsg && (selectedMsg.id === m.id);
+            const active = selectedMsg && (selectedMsg.id === m.id || selectedMsg.msg_id === m.msg_id);
             return (
               <div
-                key={m.id || idx}
+                key={m.id || m.msg_id || idx}
                 onClick={() => setSelected(m)}
                 style={{ ...listItem, ...(active ? listItemActive : null) }}
               >
@@ -86,15 +109,13 @@ export default function InboxPage() {
           {selectedMsg ? (
             <>
               <h2 style={detailSubject}>{selectedMsg.subject || '(no subject)'}</h2>
-              <div style={metaLine}>
-                <strong>From:</strong>&nbsp;{selectedMsg.from_addr || '—'}
-              </div>
+              <div style={metaLine}><strong>From:</strong>&nbsp;{selectedMsg.from_addr || '—'}</div>
               <div style={metaLine}>
                 <strong>Date:</strong>&nbsp;
                 {selectedMsg.created_at ? new Date(selectedMsg.created_at).toLocaleString() : '—'}
               </div>
               <div style={bodyBox}>
-                {selectedMsg.body ? selectedMsg.body : 'No preview available.'}
+                {loadingBody ? 'Loading message…' : (selectedMsg.body || 'No preview available.')}
               </div>
             </>
           ) : (
@@ -116,7 +137,7 @@ export default function InboxPage() {
   );
 }
 
-// --- Styles ---
+// --- Styles (close to your screenshot) ---
 const wrap = { fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' };
 const headerBar = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid #eee' };
 const logo = { fontSize: '18px', fontWeight: 700, color: '#111' };
@@ -128,7 +149,7 @@ const grid = { display: 'grid', gridTemplateColumns: '320px 1fr', height: 'calc(
 const listPane = { borderRight: '1px solid #eee', overflowY: 'auto' };
 const detailPane = { padding: 16, overflowY: 'auto' };
 
-const listItem = { padding: '12px 12px', borderRadius: 8, margin: '6px 0', background: '#fff', boxShadow: '0 1px 2px rgba(0,0,0,0.05)', cursor: 'pointer' };
+const listItem = { padding: '12px', borderRadius: 8, margin: '6px 0', background: '#fff', boxShadow: '0 1px 2px rgba(0,0,0,0.05)', cursor: 'pointer' };
 const listItemActive = { background: '#e8f0fe' };
 const from = { fontWeight: 600, fontSize: 14, color: '#222' };
 const subject = { fontSize: 13, color: '#333', marginTop: 4 };
