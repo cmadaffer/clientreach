@@ -220,4 +220,209 @@ export default function InboxPage() {
             >All time</button>
             <button
               onClick={() => { setDays('7'); setPage(1); }}
-              style={{ ...segBtn, ...(days === '7' ? segBtnActive : n
+              style={{ ...segBtn, ...(days === '7' ? segBtnActive : null) }}
+            >Last 7d</button>
+            <button
+              onClick={() => { setDays('30'); setPage(1); }}
+              style={{ ...segBtn, ...(days === '30' ? segBtnActive : null) }}
+            >Last 30d</button>
+          </div>
+        </div>
+
+        <div style={actions}>
+          <button onClick={handleSync} disabled={syncing} style={btnPrimary}>
+            {syncing ? 'Syncing…' : 'Sync Inbox'}
+          </button>
+          {syncError && <span style={errorText}>{syncError}</span>}
+        </div>
+      </div>
+
+      <div style={grid}>
+        <aside style={listPane}>
+          {pageRows.map((m, idx) => {
+            const active = selectedMsg && (selectedMsg.id === m.id || selectedMsg.msg_id === m.msg_id);
+            return (
+              <div
+                key={m.id || m.msg_id || idx}
+                onClick={() => setSelected(m)}
+                style={{ ...listItem, ...(active ? listItemActive : null) }}
+                title={m.created_at ? new Date(m.created_at).toLocaleString() : ''}
+              >
+                <div style={rowTop}>
+                  <div style={from}>{m.from_addr || '—'}</div>
+                  <span style={badge(m.direction || 'inbound')}>
+                    {(m.direction || 'inbound') === 'outbound' ? 'Sent' : 'Inbox'}
+                  </span>
+                </div>
+                <div style={subject}>{m.subject || '(no subject)'}</div>
+                <div style={rowBottom}>
+                  <span style={dateText}>{formatRelative(m.created_at)}</span>
+                </div>
+              </div>
+            );
+          })}
+          {pageRows.length === 0 && (
+            <div style={emptyList}>No messages match your filters.</div>
+          )}
+        </aside>
+
+        <main style={detailPane}>
+          {selectedMsg ? (
+            <>
+              <h2 style={detailSubject}>{selectedMsg.subject || '(no subject)'}</h2>
+              <div style={metaLine}>
+                <strong>From:</strong>&nbsp;{selectedMsg.from_addr || '—'}
+                <span style={dot} />
+                <strong>When:</strong>&nbsp;
+                {selectedMsg.created_at
+                  ? new Date(selectedMsg.created_at).toLocaleString()
+                  : '—'}
+                <span style={dot} />
+                <span style={badge(selectedMsg.direction || 'inbound')}>
+                  {(selectedMsg.direction || 'inbound') === 'outbound' ? 'Sent' : 'Inbox'}
+                </span>
+              </div>
+
+              <div style={twoCols}>
+                <div style={messageBox}>
+                  <div style={bodyBox}>
+                    {loadingBody ? 'Loading message…' : (selectedMsg.body || 'No preview available.')}
+                  </div>
+                </div>
+
+                <div style={composer}>
+                  <div style={fieldRow}>
+                    <label style={label}>To</label>
+                    <input style={input} value={to} onChange={(e) => setTo(e.target.value)} />
+                  </div>
+                  <div style={fieldRow}>
+                    <label style={label}>Subject</label>
+                    <input style={input} value={subj} onChange={(e) => setSubj(e.target.value)} />
+                  </div>
+                  <textarea
+                    style={textarea}
+                    rows={10}
+                    value={body}
+                    onChange={(e) => setBody(e.target.value)}
+                    placeholder="Type your reply…"
+                  />
+                  <div style={composeActions}>
+                    <button
+                      onClick={handleSend}
+                      disabled={sending || !to || !subj || !body}
+                      style={btnPrimary}
+                    >
+                      {sending ? 'Sending…' : 'Send'}
+                    </button>
+                    {sendOk && <span style={okText}>{sendOk}</span>}
+                    {sendErr && <span style={errorText}>{sendErr}</span>}
+                  </div>
+                  <div style={hint}>
+                    Uses SMTP env: SMTP_HOST/PORT/SECURE/USER/PASS (or IMAP_* fallback) and SMTP_FROM
+                  </div>
+                </div>
+              </div>
+            </>
+          ) : (
+            <div style={emptyDetail}>Select a message</div>
+          )}
+        </main>
+      </div>
+
+      <div style={paginationBar}>
+        <button
+          onClick={() => setPage((p) => Math.max(1, p - 1))}
+          disabled={page <= 1}
+          style={btn}
+        >
+          ← Prev
+        </button>
+        <span style={pageInfo}>Page {page} of {totalPages}</span>
+        <button
+          onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+          disabled={page >= totalPages}
+          style={btn}
+        >
+          Next →
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Helpers ---------- */
+function formatRelative(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts);
+  const diffMs = Date.now() - d.getTime();
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 7) return `${days}d ago`;
+  return d.toLocaleDateString();
+}
+
+/* ---------- Styles ---------- */
+const wrap = { fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif', background: '#f8f9fb', minHeight: '100vh' };
+const headerBar = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid #eee', background: '#fff', position: 'sticky', top: 0, zIndex: 10 };
+const logo = { fontSize: '18px', fontWeight: 700, color: '#111' };
+const pillRow = { display: 'flex', gap: 8 };
+const pill = { fontSize: 12, background: '#eef2ff', color: '#1e40af', border: '1px solid #dbeafe', padding: '4px 8px', borderRadius: 999 };
+
+const toolbar = { display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', padding: '12px 16px' };
+const filters = { display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' };
+const actions = { display: 'flex', alignItems: 'center', gap: 12 };
+const search = { width: 260, padding: '8px 10px', border: '1px solid #ccc', borderRadius: 6, fontSize: 14, background: '#fff' };
+const segmented = { display: 'inline-flex', border: '1px solid #ddd', borderRadius: 8, overflow: 'hidden' };
+const segBtn = { padding: '6px 10px', fontSize: 13, border: 'none', background: '#fff', cursor: 'pointer' };
+const segBtnActive = { background: '#111', color: '#fff' };
+
+const grid = { display: 'grid', gridTemplateColumns: '360px 1fr', height: 'calc(100vh - 160px)', gap: '16px', padding: '0 16px 16px 16px' };
+const listPane = { borderRight: '1px solid #eee', overflowY: 'auto', background: '#fff', borderRadius: 8, padding: 8 };
+const detailPane = { padding: 16, overflowY: 'auto' };
+
+const listItem = { padding: '12px', borderRadius: 8, margin: '6px 0', background: '#fff', boxShadow: '0 1px 2px rgba(0,0,0,0.05)', cursor: 'pointer', border: '1px solid #eee' };
+const listItemActive = { background: '#e8f0fe', borderColor: '#c7d2fe' };
+const rowTop = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 };
+const rowBottom = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 6 };
+const from = { fontWeight: 600, fontSize: 14, color: '#222', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '70%' };
+const subject = { fontSize: 13, color: '#333', marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' };
+const dateText = { fontSize: 12, color: '#777' };
+const badge = (direction) => ({
+  fontSize: 11,
+  padding: '3px 8px',
+  borderRadius: 999,
+  border: '1px solid',
+  borderColor: direction === 'outbound' ? '#bbf7d0' : '#dbeafe',
+  background: direction === 'outbound' ? '#ecfdf5' : '#eff6ff',
+  color: direction === 'outbound' ? '#065f46' : '#1e40af',
+});
+
+const emptyList = { padding: 16, color: '#999' };
+const emptyDetail = { padding: 16, color: '#999' };
+
+const detailSubject = { fontSize: 20, fontWeight: 700, marginBottom: 8, color: '#111' };
+const metaLine = { fontSize: 14, color: '#444', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' };
+const dot = { width: 4, height: 4, borderRadius: 4, background: '#ccc', display: 'inline-block' };
+
+const twoCols = { display: 'grid', gridTemplateColumns: '1fr 420px', gap: 16, alignItems: 'start', marginTop: 12 };
+const messageBox = { background: '#fff', border: '1px solid #eee', borderRadius: 8, padding: 12, minHeight: 220 };
+const composer = { background: '#fff', border: '1px solid #eee', borderRadius: 8, padding: 12 };
+const fieldRow = { display: 'grid', gridTemplateColumns: '80px 1fr', gap: 8, alignItems: 'center', marginBottom: 8 };
+const label = { fontSize: 13, color: '#444' };
+const input = { width: '100%', padding: '8px 10px', border: '1px solid #ccc', borderRadius: 6, fontSize: 14 };
+const textarea = { width: '100%', padding: 10, border: '1px solid #ccc', borderRadius: 6, fontSize: 14, minHeight: 220, resize: 'vertical' };
+const composeActions = { display: 'flex', alignItems: 'center', gap: 12, marginTop: 8 };
+const hint = { fontSize: 12, color: '#777', marginTop: 8 };
+
+const bodyBox = { whiteSpace: 'pre-wrap', fontSize: 15, lineHeight: 1.5, color: '#222' };
+
+const paginationBar = { display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 12, padding: '12px 16px' };
+const btn = { padding: '8px 14px', border: '1px solid #ccc', background: '#fff', cursor: 'pointer', borderRadius: 6, fontSize: 14 };
+const btnPrimary = { padding: '8px 14px', border: 'none', background: '#0070f3', color: '#fff', cursor: 'pointer', borderRadius: 6, fontSize: 14 };
+const errorText = { color: 'red', maxWidth: 600, whiteSpace: 'normal' };
+const okText = { color: 'green', marginLeft: 12 };
+const center = { textAlign: 'center', marginTop: '2rem', color: '#888' };
