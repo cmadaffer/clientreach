@@ -15,25 +15,24 @@ export default function InboxPage() {
   const [syncing, setSyncing] = useState(false);
   const [syncError, setSyncError] = useState('');
 
-  // Click once, we call the API with a hard timeout so the button never “sticks”
   const handleSync = async () => {
     setSyncing(true);
     setSyncError('');
 
+    // Give the server up to 45s so the job can finish
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 15000); // 15s timeout
+    const timer = setTimeout(() => controller.abort(), 45000);
 
     try {
-      const res = await fetch('/api/cron/inbox-process', { signal: controller.signal });
-      const text = await res.text(); // show raw error if server returns one
+      // pull the latest 50 unseen from last 14 days; tweak if you want more/less
+      const res = await fetch('/api/cron/inbox-process?limit=50&days=14', { signal: controller.signal });
+      const text = await res.text();
       clearTimeout(timer);
 
-      if (!res.ok) {
-        throw new Error(text || `Sync failed (${res.status})`);
-      }
+      if (!res.ok) throw new Error(text || `Sync failed (${res.status})`);
       await mutate();
     } catch (err) {
-      setSyncError(err.name === 'AbortError' ? 'Sync timed out (15s)' : err.message);
+      setSyncError(err.name === 'AbortError' ? 'Sync timed out (45s)' : err.message);
     } finally {
       setSyncing(false);
     }
@@ -112,7 +111,7 @@ const syncContainer = { textAlign: 'center', marginBottom: '1rem' };
 const errorText = { color: 'red', marginTop: '0.5rem', whiteSpace: 'pre-wrap' };
 const table = { width: '100%', borderCollapse: 'collapse', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' };
 const thead = { backgroundColor: '#f0f0f0' };
-const th = { textAlign: 'left', padding: '0.75rem', borderBottom: '2px solid #ddd', color: '#555', fontSize: '1rem' };
+const th = { textAlign: 'left', padding: '0.75rem', borderBottom: '2px solid '#ddd", color: '#555', fontSize: '1rem' };
 const td = { padding: '0.75rem', borderBottom: '1px solid #eee', color: '#333', fontSize: '0.95rem' };
 const pagination = { display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '1rem', marginTop: '1.5rem' };
 const btn = { padding: '0.6rem 1.2rem', border: 'none', background: '#0070f3', color: '#fff', cursor: 'pointer', borderRadius: 6, fontSize: '0.95rem', boxShadow: '0 2px 6px rgba(0,0,0,0.15)', transition: 'background-color 0.2s, transform 0.1s' };
