@@ -1,91 +1,47 @@
-// pages/api/cron/inbox-process.js
-import { ImapFlow } from 'imapflow';
-import { supabase } from '../../../lib/supabaseClient';
+// pages/api/inbox-data.js
+import { supabase } from '../../lib/supabaseClient';
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
-  // Grab a reasonable number of newest messages each run
-  const limit = Math.min(parseInt(req.query.limit, 10) || 20, 100);
+  const page = parseInt(req.query.page, 10) || 1;
+  const pageSize = parseInt(req.query.pageSize, 10) || 25;
 
-  // 1) Find newest message we’ve already stored; back off 1 hour as a cushion
-  let sinceDate = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000); // fallback: last 3 days
   try {
-    const { data: newest, error } = await supabase
+    // Pull a window, then de-dupe and paginate in memory
+    const { data: rows = [], error } = await supabase
       .from('inbox_messages')
-      .select('created_at')
+      .select('*')
       .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+      .limit(500);
 
-    if (!error && newest?.created_at) {
-      const newestTs = new Date(new Date(newest.created_at).getTime());
-      sinceDate = new Date(newestTs.getTime() - 60 * 60 * 1000);
+    if (error) throw error;
+
+    const toSecond = (v) => {
+      try { const d = new Date(v); d.setMilliseconds(0); return d.toISOString(); }
+      catch { return ''; }
+    };
+
+    // Strong de-dupe: msg_id → from+subject+created_at(to the SECOND)
+    const key = (m) =>
+      (m?.msg_id && `m:${m.msg_id}`) ||
+      `f:${m?.from_addr || ''}|s:${m?.subject || ''}|t:${toSecond(m?.created_at)}`;
+
+    const map = new Map();
+    for (const r of rows) {
+      const k = key(r);
+      if (!map.has(k)) map.set(k, r); // keep newest first (already sorted DESC)
     }
-  } catch { /* ignore; use fallback */ }
+    const deduped = Array.from(map.values());
 
-  const client = new ImapFlow({
-    host: process.env.IMAP_HOST,
-    port: Number(process.env.IMAP_PORT) || 993,
-    secure: true,
-    auth: { user: process.env.IMAP_USER, pass: process.env.IMAP_PASS },
-  });
+    // Paginate after de-dupe
+    const start = (page - 1) * pageSize;
+    const end = start + pageSize;
+    const slice = deduped.slice(start, end);
 
-  let lock;
-  try {
-    await client.connect();
-    lock = await client.getMailboxLock('INBOX');
-
-    // 2) Ask for anything newer than our cushion time (don’t filter by \Seen)
-    const uids = await client.search({ since: sinceDate });
-    if (!uids?.length) {
-      return res.status(200).json({ status: 'no-new', fetched: 0, since: sinceDate.toISOString() });
-    }
-
-    // 3) Take newest N and fetch lightweight metadata (no BODY)
-    const selected = uids.slice(-limit);
-    let fetched = 0;
-
-    for await (const msg of client.fetch(selected, { envelope: true, flags: true, internalDate: true })) {
-      const env = msg.envelope || {};
-      const stable_id =
-        (msg.gmailMessageId ? String(msg.gmailMessageId) : null) ||
-        env.messageId ||
-        String(msg.uid);
-
-      const from_addr = env.from?.[0]?.address || env.from?.[0]?.name || '';
-      const subject   = env.subject || '';
-      const created_at = env.date ? new Date(env.date) : new Date();
-
-      // 4) UPSERT ONLY the columns we know exist in your table
-      const { error: upsertErr } = await supabase
-        .from('inbox_messages')
-        .upsert(
-          [{
-            msg_id: stable_id,
-            from_addr,
-            subject,
-            body: '',          // body loads later via /api/message-body
-            created_at,
-            direction: 'inbound',
-          }],
-          { onConflict: 'msg_id' }
-        );
-
-      if (!upsertErr) fetched++;
-    }
-
-    return res.status(200).json({
-      status: 'completed',
-      fetched,
-      since: sinceDate.toISOString(),
-      limit,
-    });
+    res.status(200).json({ messages: slice, total: deduped.length });
   } catch (err) {
-    console.error('IMAP sync error:', err);
-    return res.status(500).json({ error: err.message });
-  } finally {
-    try { if (lock) lock.release(); } catch {}
-    try { await client.logout(); } catch {}
+    console.error('Inbox data error:', err);
+    res.status(500).json({ error: err.message });
   }
 }
