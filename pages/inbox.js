@@ -1,5 +1,5 @@
 // pages/inbox.js
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import useSWR from 'swr';
 
 const fetcher = (url) => fetch(url).then((r) => r.json());
@@ -17,49 +17,65 @@ export default function InboxPage() {
   const [selected, setSelected] = useState(null);
   const [loadingBody, setLoadingBody] = useState(false);
 
-  const messages = Array.isArray(data?.messages) ? data.messages : [];
+  const messagesRaw = Array.isArray(data?.messages) ? data.messages : [];
+
+  // Client-side safety dedupe (handles any residual DB dupes)
+  const messages = useMemo(() => {
+    const makeKey = (m) => m?.msg_id || `${m?.from_addr || ''}|${m?.subject || ''}|${m?.created_at || ''}`;
+    const map = new Map();
+    for (const m of messagesRaw) {
+      const k = makeKey(m);
+      if (!map.has(k)) map.set(k, m);
+    }
+    return Array.from(map.values());
+  }, [messagesRaw]);
+
   const total = typeof data?.total === 'number' ? data.total : messages.length;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
-  // When selected changes and has no body, lazy-load it
+  // When a message is selected and has no body, lazy-load it once
   useEffect(() => {
     const m = selected;
     if (!m || (m.body && m.body.trim())) return;
 
-    const load = async () => {
+    (async () => {
       setLoadingBody(true);
       try {
         const res = await fetch(`/api/message-body?msg_id=${encodeURIComponent(m.msg_id)}`);
         const json = await res.json();
-        const body = json?.body || '';
-        // merge body into local state copy
+        const body = (json && json.body) || '';
         setSelected({ ...m, body });
       } catch {
         // ignore
       } finally {
         setLoadingBody(false);
       }
-    };
-    load();
+    })();
   }, [selected]);
+
+  const cleanError = (txt) =>
+    (txt || '')
+      .replace(/<[^>]*>/g, ' ') // strip tags so no red HTML blob
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 200); // keep it short
 
   const handleSync = async () => {
     setSyncing(true);
     setSyncError('');
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 20000); // 20s timeout
+    const timer = setTimeout(() => controller.abort(), 20000); // 20s, small batch server-side
 
     try {
-      const res = await fetch('/api/cron/inbox-process?limit=10&days=7', {
-        signal: controller.signal,
-      });
+      const res = await fetch('/api/cron/inbox-process?limit=10&days=7', { signal: controller.signal });
       const text = await res.text();
       clearTimeout(timer);
-      if (!res.ok) throw new Error(text || `Sync failed (${res.status})`);
+
+      if (!res.ok) throw new Error(cleanError(text) || `Sync failed (${res.status})`);
       await mutate();
     } catch (err) {
-      setSyncError(err.name === 'AbortError' ? 'Sync timed out (20s)' : err.message);
+      setSyncError(err.name === 'AbortError' ? 'Sync timed out (20s)' : cleanError(err.message));
     } finally {
       setSyncing(false);
     }
@@ -137,13 +153,13 @@ export default function InboxPage() {
   );
 }
 
-// --- Styles (close to your screenshot) ---
+// --- Styles ---
 const wrap = { fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' };
 const headerBar = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid #eee' };
 const logo = { fontSize: '18px', fontWeight: 700, color: '#111' };
 
 const toolbar = { display: 'flex', gap: 12, alignItems: 'center', padding: '12px 16px' };
-const errorText = { color: 'red' };
+const errorText = { color: 'red', maxWidth: 600, whiteSpace: 'normal' };
 
 const grid = { display: 'grid', gridTemplateColumns: '320px 1fr', height: 'calc(100vh - 140px)', gap: '16px', padding: '0 16px 16px 16px' };
 const listPane = { borderRight: '1px solid #eee', overflowY: 'auto' };
