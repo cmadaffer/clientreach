@@ -19,12 +19,11 @@ export default function InboxPage() {
     setSyncing(true);
     setSyncError('');
 
-    // 45s client-side timeout so the button never sticks
+    // 45s timeout so the button never sticks
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 45000);
 
     try {
-      // pulls latest 50 unseen from last 14 days (handled server-side)
       const res = await fetch('/api/cron/inbox-process?limit=50&days=14', {
         signal: controller.signal,
       });
@@ -49,4 +48,81 @@ export default function InboxPage() {
   const totalPages = Math.ceil(Math.max(total, 1) / pageSize);
 
   return (
-    <div style={c
+    <div style={container}>
+      <h1 style={heading}>Inbox</h1>
+
+      <div style={syncContainer}>
+        <button onClick={handleSync} disabled={syncing} style={btn}>
+          {syncing ? 'Syncing…' : 'Sync Inbox'}
+        </button>
+        {syncError && <p style={errorText}>{syncError}</p>}
+      </div>
+
+      <table style={table}>
+        <thead style={thead}>
+          <tr>
+            <th style={th}>From</th>
+            <th style={th}>Subject</th>
+            <th style={th}>Date</th>
+          </tr>
+        </thead>
+        <tbody>
+          {messages.map((m, idx) => (
+            <tr
+              key={m.id || idx}
+              style={{
+                backgroundColor: idx % 2 === 0 ? '#fafafa' : '#ffffff',
+                transition: 'background-color 0.2s',
+                cursor: 'pointer',
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e8e8e8')}
+              onMouseLeave={(e) =>
+                (e.currentTarget.style.backgroundColor =
+                  idx % 2 === 0 ? '#fafafa' : '#ffffff')
+              }
+            >
+              <td style={td}>{m.from_addr || '—'}</td>
+              <td style={td}>{m.subject || '(no subject)'}</td>
+              <td style={td}>
+                {m.created_at ? new Date(m.created_at).toLocaleString() : '—'}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <div style={pagination}>
+        <button
+          onClick={() => setPage((p) => Math.max(p - 1, 1))}
+          disabled={page <= 1}
+          style={btn}
+        >
+          ← Prev
+        </button>
+        <span style={pageInfo}>Page {page} of {totalPages}</span>
+        <button
+          onClick={() => setPage((p) => Math.min(p + 1, totalPages))}
+          disabled={page >= totalPages}
+          style={btn}
+        >
+          Next →
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// styles
+const container = { maxWidth: 900, margin: '2rem auto', padding: '0 1rem', fontFamily: 'system-ui, sans-serif' };
+const heading = { fontSize: '2rem', textAlign: 'center', color: '#333333', marginBottom: '1rem' };
+const syncContainer = { textAlign: 'center', marginBottom: '1rem' };
+const errorText = { color: 'red', marginTop: '0.5rem', whiteSpace: 'pre-wrap' };
+const table = { width: '100%', borderCollapse: 'collapse', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' };
+const thead = { backgroundColor: '#f0f0f0' };
+const th = { textAlign: 'left', padding: '0.75rem', borderBottom: '2px solid #dddddd', color: '#555555', fontSize: '1rem' };
+const td = { padding: '0.75rem', borderBottom: '1px solid #eeeeee', color: '#333333', fontSize: '0.95rem' };
+const pagination = { display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '1rem', marginTop: '1.5rem' };
+const btn = { padding: '0.6rem 1.2rem', border: 'none', background: '#0070f3', color: '#ffffff', cursor: 'pointer', borderRadius: 6, fontSize: '0.95rem', boxShadow: '0 2px 6px rgba(0,0,0,0.15)', transition: 'background-color 0.2s, transform 0.1s' };
+const pageInfo = { fontSize: '1rem', color: '#555555' };
+const center = { textAlign: 'center', marginTop: '2rem', color: '#888888' };
+
