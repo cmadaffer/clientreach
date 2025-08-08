@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import useSWR from 'swr';
 
-// Safe fetcher: tolerates non-JSON responses without throwing
+// Safe fetcher
 const fetcher = async (url) => {
   const res = await fetch(url, { headers: { Accept: 'application/json' } });
   const text = await res.text();
@@ -19,14 +19,13 @@ export default function InboxPage() {
   const [page, setPage] = useState(1);
   const pageSize = 25;
 
-  // Auto-refresh every 60s
-  const { data, error, mutate } = useSWR(
+  // 🔒 NO auto-refresh — only manual
+  const { data, error, mutate, isValidating } = useSWR(
     `/api/inbox-data?page=${page}&pageSize=${pageSize}`,
     fetcher,
-    { refreshInterval: 60000, revalidateOnFocus: false }
+    { refreshInterval: 0, revalidateOnFocus: false }
   );
 
-  // Selection / status
   const [selected, setSelected] = useState(null);
   const [loadingBody, setLoadingBody] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -43,15 +42,15 @@ export default function InboxPage() {
   // Smart Reply
   const [generating, setGenerating] = useState(false);
 
-  // Search/filters
+  // Filters
   const [q, setQ] = useState('');
-  const [dir, setDir] = useState('all');   // 'all' | 'inbound' | 'outbound'
-  const [days, setDays] = useState('all'); // 'all' | '7' | '30'
+  const [dir, setDir] = useState('all');
+  const [days, setDays] = useState('all');
 
   const apiError = data && data.error ? String(data.error) : null;
   const messagesRaw = Array.isArray(data?.messages) ? data.messages : [];
 
-  // Defensive de-dupe
+  // De-dupe
   const deduped = useMemo(() => {
     const map = new Map();
     for (const m of messagesRaw) {
@@ -63,49 +62,41 @@ export default function InboxPage() {
     return Array.from(map.values());
   }, [messagesRaw]);
 
-  // Client-side filtering (includes direction/date/search)
   const filtered = useMemo(() => {
     const qNorm = (q || '').trim().toLowerCase();
     const cutoff = days === 'all' ? null : new Date(Date.now() - Number(days) * 24 * 60 * 60 * 1000);
-
     return deduped.filter((m) => {
       if (!m) return false;
       const direction = m.direction || 'inbound';
       if (dir !== 'all' && direction !== dir) return false;
-
       if (cutoff) {
         const d = m.created_at ? new Date(m.created_at) : null;
         if (!d || d < cutoff) return false;
       }
-
       if (!qNorm) return true;
       const hay = `${m.from_addr || ''} ${m.subject || ''} ${m.body || ''}`.toLowerCase();
       return hay.includes(qNorm);
     });
   }, [deduped, dir, days, q]);
 
-  // Pagination
   const total = filtered.length;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const start = (page - 1) * pageSize;
   const end = start + pageSize;
   const pageRows = filtered.slice(start, end);
 
-  // Maintain selection
   useEffect(() => {
     if (!selected && pageRows.length) setSelected(pageRows[0]);
   }, [pageRows, selected]);
 
-  // Lazy-load body + prefill composer when selection changes
+  // Load body for selected
   useEffect(() => {
     const m = selected;
     if (!m) return;
 
     setTo(m.from_addr || '');
     setSubj(m.subject ? (m.subject.toLowerCase().startsWith('re:') ? m.subject : `Re: ${m.subject}`) : 'Re:');
-    setBody(
-      `\n\n--- On ${m.created_at ? new Date(m.created_at).toLocaleString() : ''}, ${m.from_addr || ''} wrote:\n${(m.body || '').slice(0, 500)}`
-    );
+    setBody(`\n\n--- On ${m.created_at ? new Date(m.created_at).toLocaleString() : ''}, ${m.from_addr || ''} wrote:\n${(m.body || '').slice(0, 500)}`);
 
     if (m.body && m.body.trim()) return;
 
@@ -134,18 +125,21 @@ export default function InboxPage() {
     setSyncError('');
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 20000);
-
     try {
       const res = await fetch('/api/cron/inbox-process?limit=20', { signal: controller.signal });
       const txt = await res.text();
       clearTimeout(timer);
       if (!res.ok) throw new Error(cleanError(txt) || `Sync failed (${res.status})`);
-      await mutate();
+      await mutate(); // manual refresh
     } catch (err) {
       setSyncError(err.name === 'AbortError' ? 'Sync timed out (20s)' : cleanError(err.message));
     } finally {
       setSyncing(false);
     }
+  };
+
+  const handleRefresh = async () => {
+    await mutate(); // manual refresh without hitting cron
   };
 
   const handleSend = async () => {
@@ -210,7 +204,7 @@ export default function InboxPage() {
     }
   };
 
-  // Top-level guards
+  // Guards
   if (error) return <p style={center}>Failed to load: {String(error.message || error)}</p>;
   if (apiError) return <p style={center}>API error: {cleanError(apiError)}</p>;
   if (!data) return <p style={center}>Loading…</p>;
@@ -245,6 +239,9 @@ export default function InboxPage() {
         </div>
 
         <div style={actions}>
+          <button onClick={handleRefresh} disabled={isValidating} style={btn}>
+            {isValidating ? 'Refreshing…' : 'Refresh'}
+          </button>
           <button onClick={handleSync} disabled={syncing} style={btnPrimary}>
             {syncing ? 'Syncing…' : 'Sync Inbox'}
           </button>
@@ -256,7 +253,7 @@ export default function InboxPage() {
         <aside style={listPane}>
           {pageRows.map((m, idx) => {
             const active = selectedMsg && (selectedMsg.id === m.id || selectedMsg.msg_id === m.msg_id);
-            const isImportant = m?.important === true; // flag from API
+            const isImportant = m?.important === true;
             return (
               <div
                 key={m?.id || m?.msg_id || idx}
@@ -303,7 +300,6 @@ export default function InboxPage() {
                   <div style={fieldRow}><label style={label}>To</label><input style={input} value={to} onChange={(e) => setTo(e.target.value)} /></div>
                   <div style={fieldRow}><label style={label}>Subject</label><input style={input} value={subj} onChange={(e) => setSubj(e.target.value)} /></div>
                   <textarea style={textarea} rows={12} value={body} onChange={(e) => setBody(e.target.value)} placeholder="Type your reply…" />
-
                   <div style={composeActions}>
                     <button onClick={handleSmartReply} disabled={generating || !selectedMsg} style={btnSecondary}>
                       {generating ? 'Thinking…' : '💡 Smart Reply'}
@@ -314,9 +310,7 @@ export default function InboxPage() {
                     {sendOk && <span style={okText}>{sendOk}</span>}
                     {sendErr && <span style={errorText}>{sendErr}</span>}
                   </div>
-                  <div style={hint}>
-                    SMTP env: SMTP_HOST/PORT/SECURE/USER/PASS (or IMAP_* fallback) and SMTP_FROM. Smart Reply uses your OpenAI key server-side.
-                  </div>
+                  <div style={hint}>No auto-refresh; use Refresh or Sync Inbox as needed.</div>
                 </div>
               </div>
             </>
@@ -377,7 +371,6 @@ const rowBottom = { display: 'flex', justifyContent: 'space-between', alignItems
 const from = { fontWeight: 600, fontSize: 14, color: '#222', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '70%' };
 const subject = { fontSize: 13, color: '#333', marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' };
 const dateText = { fontSize: 12, color: '#777' };
-
 const badge = (direction) => ({
   fontSize: 11,
   padding: '3px 8px',
