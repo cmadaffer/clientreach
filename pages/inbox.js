@@ -7,9 +7,12 @@ const fetcher = (url) => fetch(url).then((r) => r.json());
 export default function InboxPage() {
   const [page, setPage] = useState(1);
   const pageSize = 25;
+
+  // Auto-refresh list every 60s
   const { data, error, mutate } = useSWR(
     `/api/inbox-data?page=${page}&pageSize=${pageSize}`,
-    fetcher
+    fetcher,
+    { refreshInterval: 60_000, revalidateOnFocus: false }
   );
 
   const [syncing, setSyncing] = useState(false);
@@ -17,9 +20,17 @@ export default function InboxPage() {
   const [selected, setSelected] = useState(null);
   const [loadingBody, setLoadingBody] = useState(false);
 
+  // Reply state
+  const [to, setTo] = useState('');
+  const [subj, setSubj] = useState('');
+  const [body, setBody] = useState('');
+  const [sending, setSending] = useState(false);
+  const [sendErr, setSendErr] = useState('');
+  const [sendOk, setSendOk] = useState('');
+
   const messagesRaw = Array.isArray(data?.messages) ? data.messages : [];
 
-  // Client-side safety dedupe (handles any residual DB dupes)
+  // Client-side safety dedupe
   const messages = useMemo(() => {
     const makeKey = (m) => m?.msg_id || `${m?.from_addr || ''}|${m?.subject || ''}|${m?.created_at || ''}`;
     const map = new Map();
@@ -36,39 +47,40 @@ export default function InboxPage() {
   // When a message is selected and has no body, lazy-load it once
   useEffect(() => {
     const m = selected;
-    if (!m || (m.body && m.body.trim())) return;
+    if (!m) return;
+
+    // Pre-fill reply fields
+    setTo(m.from_addr || '');
+    setSubj(m.subject ? (m.subject.toLowerCase().startsWith('re:') ? m.subject : `Re: ${m.subject}`) : 'Re:');
+    setBody(`\n\n--- On ${m.created_at ? new Date(m.created_at).toLocaleString() : ''}, ${m.from_addr || ''} wrote:\n`);
+
+    if (m.body && m.body.trim()) return;
 
     (async () => {
       setLoadingBody(true);
       try {
         const res = await fetch(`/api/message-body?msg_id=${encodeURIComponent(m.msg_id)}`);
         const json = await res.json();
-        const body = (json && json.body) || '';
-        setSelected({ ...m, body });
-      } catch {
-        // ignore
-      } finally {
-        setLoadingBody(false);
-      }
+        const loaded = (json && json.body) || '';
+        // merge body into local state copy
+        setSelected({ ...m, body: loaded });
+      } catch { /* ignore */ }
+      finally { setLoadingBody(false); }
     })();
   }, [selected]);
 
   const cleanError = (txt) =>
-    (txt || '')
-      .replace(/<[^>]*>/g, ' ') // strip tags so no red HTML blob
-      .replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, 200); // keep it short
+    (txt || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200);
 
   const handleSync = async () => {
     setSyncing(true);
     setSyncError('');
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 20000); // 20s, small batch server-side
+    const timer = setTimeout(() => controller.abort(), 20000);
 
     try {
-      const res = await fetch('/api/cron/inbox-process?limit=10&days=7', { signal: controller.signal });
+      const res = await fetch('/api/cron/inbox-process?limit=20', { signal: controller.signal });
       const text = await res.text();
       clearTimeout(timer);
 
@@ -78,6 +90,36 @@ export default function InboxPage() {
       setSyncError(err.name === 'AbortError' ? 'Sync timed out (20s)' : cleanError(err.message));
     } finally {
       setSyncing(false);
+    }
+  };
+
+  const handleSend = async () => {
+    setSending(true);
+    setSendErr('');
+    setSendOk('');
+
+    try {
+      const res = await fetch('/api/send-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          to,
+          subject: subj,
+          text: body,
+          inReplyTo: selected?.msg_id || null,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json?.ok) throw new Error(json?.error || 'Send failed');
+
+      setSendOk('Sent ✔');
+      await mutate(); // pull in the logged outbound item
+      setTimeout(() => setSendOk(''), 3000);
+    } catch (e) {
+      setSendErr(cleanError(e.message));
+      setTimeout(() => setSendErr(''), 5000);
+    } finally {
+      setSending(false);
     }
   };
 
@@ -130,8 +172,41 @@ export default function InboxPage() {
                 <strong>Date:</strong>&nbsp;
                 {selectedMsg.created_at ? new Date(selectedMsg.created_at).toLocaleString() : '—'}
               </div>
-              <div style={bodyBox}>
-                {loadingBody ? 'Loading message…' : (selectedMsg.body || 'No preview available.')}
+
+              <div style={twoCols}>
+                <div style={messageBox}>
+                  <div style={bodyBox}>
+                    {loadingBody ? 'Loading message…' : (selectedMsg.body || 'No preview available.')}
+                  </div>
+                </div>
+
+                <div style={composer}>
+                  <div style={fieldRow}>
+                    <label style={label}>To</label>
+                    <input style={input} value={to} onChange={(e) => setTo(e.target.value)} />
+                  </div>
+                  <div style={fieldRow}>
+                    <label style={label}>Subject</label>
+                    <input style={input} value={subj} onChange={(e) => setSubj(e.target.value)} />
+                  </div>
+                  <textarea
+                    style={textarea}
+                    rows={10}
+                    value={body}
+                    onChange={(e) => setBody(e.target.value)}
+                    placeholder="Type your reply…"
+                  />
+                  <div style={composeActions}>
+                    <button onClick={handleSend} disabled={sending || !to || !subj || !body} style={btnPrimary}>
+                      {sending ? 'Sending…' : 'Send'}
+                    </button>
+                    {sendOk && <span style={okText}>{sendOk}</span>}
+                    {sendErr && <span style={errorText}>{sendErr}</span>}
+                  </div>
+                  <div style={hint}>
+                    Uses SMTP env: SMTP_HOST/PORT/SECURE/USER/PASS (or IMAP_* fallback) and SMTP_FROM
+                  </div>
+                </div>
               </div>
             </>
           ) : (
@@ -160,6 +235,7 @@ const logo = { fontSize: '18px', fontWeight: 700, color: '#111' };
 
 const toolbar = { display: 'flex', gap: 12, alignItems: 'center', padding: '12px 16px' };
 const errorText = { color: 'red', maxWidth: 600, whiteSpace: 'normal' };
+const okText = { color: 'green', marginLeft: 12 };
 
 const grid = { display: 'grid', gridTemplateColumns: '320px 1fr', height: 'calc(100vh - 140px)', gap: '16px', padding: '0 16px 16px 16px' };
 const listPane = { borderRight: '1px solid #eee', overflowY: 'auto' };
@@ -175,7 +251,18 @@ const emptyDetail = { padding: 16, color: '#999' };
 
 const detailSubject = { fontSize: 20, fontWeight: 700, marginBottom: 8 };
 const metaLine = { fontSize: 14, color: '#444', marginBottom: 6 };
-const bodyBox = { whiteSpace: 'pre-wrap', fontSize: 15, lineHeight: 1.5, color: '#222', marginTop: 16 };
+
+const twoCols = { display: 'grid', gridTemplateColumns: '1fr 400px', gap: 16, alignItems: 'start', marginTop: 12 };
+const messageBox = { background: '#fff', border: '1px solid #eee', borderRadius: 8, padding: 12, minHeight: 200 };
+const composer = { background: '#fff', border: '1px solid #eee', borderRadius: 8, padding: 12 };
+const fieldRow = { display: 'grid', gridTemplateColumns: '80px 1fr', gap: 8, alignItems: 'center', marginBottom: 8 };
+const label = { fontSize: 13, color: '#444' };
+const input = { width: '100%', padding: '8px 10px', border: '1px solid #ccc', borderRadius: 6, fontSize: 14 };
+const textarea = { width: '100%', padding: 10, border: '1px solid #ccc', borderRadius: 6, fontSize: 14, minHeight: 220 };
+const composeActions = { display: 'flex', alignItems: 'center', gap: 12, marginTop: 8 };
+const hint = { fontSize: 12, color: '#777', marginTop: 8 };
+
+const bodyBox = { whiteSpace: 'pre-wrap', fontSize: 15, lineHeight: 1.5, color: '#222' };
 
 const paginationBar = { display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 12, padding: '12px 16px' };
 const btn = { padding: '8px 14px', border: '1px solid #ccc', background: '#fff', cursor: 'pointer', borderRadius: 6, fontSize: 14 };
