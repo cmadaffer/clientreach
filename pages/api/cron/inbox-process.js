@@ -1,16 +1,13 @@
 // pages/api/cron/inbox-process.js
 import { ImapFlow } from 'imapflow';
-import { simpleParser } from 'mailparser';
 import { supabase } from '../../../lib/supabaseClient';
 
 export default async function handler(req, res) {
-  if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
+  if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
-  // Batch controls (fast + safe defaults)
-  const limit = Math.min(parseInt(req.query.limit, 10) || 25, 200);
-  const days  = Math.min(parseInt(req.query.days, 10)  || 14, 90);
+  // Keep fast: small batches & short lookback
+  const limit = Math.min(parseInt(req.query.limit, 10) || 10, 100); // 10 per click
+  const days  = Math.min(parseInt(req.query.days, 10)  || 7, 90);   // last 7 days
   const sinceDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
   const client = new ImapFlow({
@@ -25,42 +22,50 @@ export default async function handler(req, res) {
     await client.connect();
     lock = await client.getMailboxLock('INBOX');
 
-    // unseen within window
+    // Search unseen & recent; get just UIDs first (fast).
     const uids = await client.search({ seen: false, since: sinceDate });
-    if (!uids || uids.length === 0) {
-      return res.status(200).json({ status: 'no-unseen', scanned: 0, fetched: 0 });
-    }
+    if (!uids?.length) return res.status(200).json({ status: 'no-unseen', fetched: 0 });
 
-    // most recent N
     const selected = uids.slice(-limit);
 
+    // Fetch ENVELOPE+FLAGS only (no BODY here). We'll lazy-load body on click.
     let fetched = 0;
-    // fetch envelope + source so we can parse and store body
-    for await (const msg of client.fetch(selected, { envelope: true, source: true, flags: true })) {
+    for await (const msg of client.fetch(selected, { envelope: true, flags: true, internalDate: true })) {
       const flags = Array.isArray(msg.flags) ? msg.flags : [];
       if (flags.includes('\\Seen')) continue;
 
       const env = msg.envelope || {};
-      let parsed = {};
-      try { parsed = await simpleParser(msg.source); } catch {}
+      const uid = msg.uid;
+      const gm_msgid = msg.gmailMessageId || undefined; // if exposed by imapflow; harmless if undefined
+      // Prefer a stable ID order: Gmail ID → RFC Message-Id → UID
+      const stable_id = (gm_msgid && String(gm_msgid)) || env.messageId || String(uid);
 
-      const msg_id = parsed?.messageId || env?.messageId || String(msg.uid);
-      const from_addr = parsed?.from?.text || env?.from?.[0]?.address || '';
-      const subject = parsed?.subject || env?.subject || '';
-      const body = parsed?.text || '';
-      const dt = parsed?.date || env?.date || new Date();
-      const created_at = dt ? new Date(dt) : new Date();
+      const from_addr = env.from?.[0]?.address || env.from?.[0]?.name || '';
+      const subject   = env.subject || '';
+      const created_at = env.date ? new Date(env.date) : new Date();
 
-      // UPSERT by msg_id (you already have UNIQUE(msg_id))
+      // UPSERT by msg_id (stable_id). Body left empty; fetched on demand.
       const { error: upsertErr } = await supabase
         .from('inbox_messages')
         .upsert(
-          [{ msg_id, from_addr, subject, body, created_at, direction: 'inbound' }],
-          { onConflict: 'msg_id' }
+          [{
+            msg_id: stable_id,
+            gm_msgid: gm_msgid ? String(gm_msgid) : null,
+            uid,
+            from_addr,
+            subject,
+            body: '',        // empty now; filled by message-body API when user clicks
+            created_at,
+            direction: 'inbound'
+          }],
+          { onConflict: 'msg_id' } // you already have UNIQUE(msg_id)
         );
+
       if (upsertErr) console.error('Supabase upsert error:', upsertErr.message);
 
-      try { await client.messageFlagsAdd(msg.uid, ['\\Seen']); } catch {}
+      // Mark seen so we don't reprocess next time
+      try { await client.messageFlagsAdd(uid, ['\\Seen']); } catch (e) { /* ignore */ }
+
       fetched++;
     }
 
@@ -73,4 +78,3 @@ export default async function handler(req, res) {
     try { await client.logout(); } catch {}
   }
 }
-
