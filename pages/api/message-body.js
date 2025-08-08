@@ -10,16 +10,16 @@ export default async function handler(req, res) {
   if (!msgId) return res.status(400).json({ error: 'msg_id required' });
 
   try {
-    // find the record, we use uid if we have it
-    const { data, error } = await supabase
+    // Find row — we only need the DB id and any cached body
+    const { data: row, error } = await supabase
       .from('inbox_messages')
-      .select('id, uid, body')
+      .select('id, body, subject, created_at')
       .eq('msg_id', msgId)
       .maybeSingle();
 
     if (error) throw error;
-    if (!data) return res.status(404).json({ error: 'Message not found' });
-    if (data.body && data.body.trim()) return res.status(200).json({ body: data.body });
+    if (!row) return res.status(404).json({ error: 'Message not found' });
+    if (row.body && row.body.trim()) return res.status(200).json({ body: row.body });
 
     const client = new ImapFlow({
       host: process.env.IMAP_HOST,
@@ -33,17 +33,35 @@ export default async function handler(req, res) {
       await client.connect();
       lock = await client.getMailboxLock('INBOX');
 
-      if (!data.uid) return res.status(200).json({ body: '' }); // no uid stored yet
+      let fetchIterator;
 
-      // fetch this single message source by UID
-      const iter = client.fetch({ uid: data.uid }, { source: true });
-      const { value } = await iter.next();
+      // If msgId looks like an RFC Message-ID (<...@...>), search by header
+      const looksLikeHeaderId = /@/.test(msgId);
+      if (looksLikeHeaderId) {
+        const ids = await client.search({ header: ['Message-ID', msgId] });
+        if (ids?.length) {
+          fetchIterator = client.fetch(ids.slice(-1), { source: true });
+        }
+      } else if (/^\d+$/.test(msgId)) {
+        // If it’s numeric, assume it was a UID
+        fetchIterator = client.fetch({ uid: Number(msgId) }, { source: true });
+      }
+
+      if (!fetchIterator) {
+        return res.status(200).json({ body: '' }); // can't locate; leave empty
+      }
+
+      const { value } = await fetchIterator.next();
       if (!value?.source) return res.status(200).json({ body: '' });
 
       const parsed = await simpleParser(value.source);
-      const bodyText = parsed?.text || '';
+      const bodyText = parsed?.text || parsed?.html || '';
 
-      await supabase.from('inbox_messages').update({ body: bodyText }).eq('id', data.id);
+      // Cache body
+      await supabase
+        .from('inbox_messages')
+        .update({ body: bodyText })
+        .eq('id', row.id);
 
       return res.status(200).json({ body: bodyText });
     } finally {
