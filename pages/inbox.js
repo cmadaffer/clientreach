@@ -6,7 +6,7 @@ const fetcher = (url) => fetch(url).then((r) => r.json());
 
 export default function InboxPage() {
   const [page, setPage] = useState(1);
-  const pageSize = 10;
+  const pageSize = 25;
   const { data, error, mutate } = useSWR(
     `/api/inbox-data?page=${page}&pageSize=${pageSize}`,
     fetcher
@@ -14,22 +14,20 @@ export default function InboxPage() {
 
   const [syncing, setSyncing] = useState(false);
   const [syncError, setSyncError] = useState('');
+  const [selected, setSelected] = useState(null);
 
   const handleSync = async () => {
     setSyncing(true);
     setSyncError('');
 
-    // 45s timeout so the button never sticks
+    // 45s client timeout so the button never “sticks”
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 45000);
 
     try {
-      const res = await fetch('/api/cron/inbox-process?limit=50&days=14', {
-        signal: controller.signal,
-      });
+      const res = await fetch('/api/cron/inbox-process?limit=25&days=14', { signal: controller.signal });
       const text = await res.text();
       clearTimeout(timer);
-
       if (!res.ok) throw new Error(text || `Sync failed (${res.status})`);
       await mutate();
     } catch (err) {
@@ -45,66 +43,72 @@ export default function InboxPage() {
 
   const messages = Array.isArray(data.messages) ? data.messages : [];
   const total = typeof data.total === 'number' ? data.total : messages.length;
-  const totalPages = Math.ceil(Math.max(total, 1) / pageSize);
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+  const selectedMsg = selected || messages[0] || null;
 
   return (
-    <div style={container}>
-      <h1 style={heading}>Inbox</h1>
-
-      <div style={syncContainer}>
-        <button onClick={handleSync} disabled={syncing} style={btn}>
-          {syncing ? 'Syncing…' : 'Sync Inbox'}
-        </button>
-        {syncError && <p style={errorText}>{syncError}</p>}
+    <div style={wrap}>
+      <div style={headerBar}>
+        <h1 style={logo}>ClientReach</h1>
+        <div />
       </div>
 
-      <table style={table}>
-        <thead style={thead}>
-          <tr>
-            <th style={th}>From</th>
-            <th style={th}>Subject</th>
-            <th style={th}>Date</th>
-          </tr>
-        </thead>
-        <tbody>
-          {messages.map((m, idx) => (
-            <tr
-              key={m.id || idx}
-              style={{
-                backgroundColor: idx % 2 === 0 ? '#fafafa' : '#ffffff',
-                transition: 'background-color 0.2s',
-                cursor: 'pointer',
-              }}
-              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e8e8e8')}
-              onMouseLeave={(e) =>
-                (e.currentTarget.style.backgroundColor =
-                  idx % 2 === 0 ? '#fafafa' : '#ffffff')
-              }
-            >
-              <td style={td}>{m.from_addr || '—'}</td>
-              <td style={td}>{m.subject || '(no subject)'}</td>
-              <td style={td}>
-                {m.created_at ? new Date(m.created_at).toLocaleString() : '—'}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <div style={toolbar}>
+        <button onClick={handleSync} disabled={syncing} style={btnPrimary}>
+          {syncing ? 'Syncing…' : 'Sync Inbox'}
+        </button>
+        {syncError && <span style={errorText}>{syncError}</span>}
+      </div>
 
-      <div style={pagination}>
-        <button
-          onClick={() => setPage((p) => Math.max(p - 1, 1))}
-          disabled={page <= 1}
-          style={btn}
-        >
+      <div style={grid}>
+        <aside style={listPane}>
+          {messages.map((m, idx) => {
+            const active = selectedMsg && (selectedMsg.id === m.id);
+            return (
+              <div
+                key={m.id || idx}
+                onClick={() => setSelected(m)}
+                style={{ ...listItem, ...(active ? listItemActive : null) }}
+              >
+                <div style={from}>{m.from_addr || '—'}</div>
+                <div style={subject}>{m.subject || '(no subject)'}</div>
+                <div style={dateText}>
+                  {m.created_at ? new Date(m.created_at).toLocaleString() : '—'}
+                </div>
+              </div>
+            );
+          })}
+          {messages.length === 0 && <div style={emptyList}>No messages</div>}
+        </aside>
+
+        <main style={detailPane}>
+          {selectedMsg ? (
+            <>
+              <h2 style={detailSubject}>{selectedMsg.subject || '(no subject)'}</h2>
+              <div style={metaLine}>
+                <strong>From:</strong>&nbsp;{selectedMsg.from_addr || '—'}
+              </div>
+              <div style={metaLine}>
+                <strong>Date:</strong>&nbsp;
+                {selectedMsg.created_at ? new Date(selectedMsg.created_at).toLocaleString() : '—'}
+              </div>
+              <div style={bodyBox}>
+                {selectedMsg.body ? selectedMsg.body : 'No preview available.'}
+              </div>
+            </>
+          ) : (
+            <div style={emptyDetail}>Select a message</div>
+          )}
+        </main>
+      </div>
+
+      <div style={paginationBar}>
+        <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1} style={btn}>
           ← Prev
         </button>
         <span style={pageInfo}>Page {page} of {totalPages}</span>
-        <button
-          onClick={() => setPage((p) => Math.min(p + 1, totalPages))}
-          disabled={page >= totalPages}
-          style={btn}
-        >
+        <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages} style={btn}>
           Next →
         </button>
       </div>
@@ -112,17 +116,32 @@ export default function InboxPage() {
   );
 }
 
-// styles
-const container = { maxWidth: 900, margin: '2rem auto', padding: '0 1rem', fontFamily: 'system-ui, sans-serif' };
-const heading = { fontSize: '2rem', textAlign: 'center', color: '#333333', marginBottom: '1rem' };
-const syncContainer = { textAlign: 'center', marginBottom: '1rem' };
-const errorText = { color: 'red', marginTop: '0.5rem', whiteSpace: 'pre-wrap' };
-const table = { width: '100%', borderCollapse: 'collapse', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' };
-const thead = { backgroundColor: '#f0f0f0' };
-const th = { textAlign: 'left', padding: '0.75rem', borderBottom: '2px solid #dddddd', color: '#555555', fontSize: '1rem' };
-const td = { padding: '0.75rem', borderBottom: '1px solid #eeeeee', color: '#333333', fontSize: '0.95rem' };
-const pagination = { display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '1rem', marginTop: '1.5rem' };
-const btn = { padding: '0.6rem 1.2rem', border: 'none', background: '#0070f3', color: '#ffffff', cursor: 'pointer', borderRadius: 6, fontSize: '0.95rem', boxShadow: '0 2px 6px rgba(0,0,0,0.15)', transition: 'background-color 0.2s, transform 0.1s' };
-const pageInfo = { fontSize: '1rem', color: '#555555' };
-const center = { textAlign: 'center', marginTop: '2rem', color: '#888888' };
+// --- Styles ---
+const wrap = { fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' };
+const headerBar = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid #eee' };
+const logo = { fontSize: '18px', fontWeight: 700, color: '#111' };
 
+const toolbar = { display: 'flex', gap: 12, alignItems: 'center', padding: '12px 16px' };
+const errorText = { color: 'red' };
+
+const grid = { display: 'grid', gridTemplateColumns: '320px 1fr', height: 'calc(100vh - 140px)', gap: '16px', padding: '0 16px 16px 16px' };
+const listPane = { borderRight: '1px solid #eee', overflowY: 'auto' };
+const detailPane = { padding: 16, overflowY: 'auto' };
+
+const listItem = { padding: '12px 12px', borderRadius: 8, margin: '6px 0', background: '#fff', boxShadow: '0 1px 2px rgba(0,0,0,0.05)', cursor: 'pointer' };
+const listItemActive = { background: '#e8f0fe' };
+const from = { fontWeight: 600, fontSize: 14, color: '#222' };
+const subject = { fontSize: 13, color: '#333', marginTop: 4 };
+const dateText = { fontSize: 12, color: '#777', marginTop: 2 };
+const emptyList = { padding: 16, color: '#999' };
+const emptyDetail = { padding: 16, color: '#999' };
+
+const detailSubject = { fontSize: 20, fontWeight: 700, marginBottom: 8 };
+const metaLine = { fontSize: 14, color: '#444', marginBottom: 6 };
+const bodyBox = { whiteSpace: 'pre-wrap', fontSize: 15, lineHeight: 1.5, color: '#222', marginTop: 16 };
+
+const paginationBar = { display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 12, padding: '12px 16px' };
+const btn = { padding: '8px 14px', border: '1px solid #ccc', background: '#fff', cursor: 'pointer', borderRadius: 6, fontSize: 14 };
+const btnPrimary = { padding: '8px 14px', border: 'none', background: '#0070f3', color: '#fff', cursor: 'pointer', borderRadius: 6, fontSize: 14 };
+const pageInfo = { fontSize: 14 };
+const center = { textAlign: 'center', marginTop: '2rem', color: '#888' };
