@@ -1,5 +1,6 @@
 // pages/api/cron/inbox-process.js
 import { ImapFlow } from 'imapflow';
+import { simpleParser } from 'mailparser';
 import { supabase } from '../../../lib/supabaseClient';
 
 export default async function handler(req, res) {
@@ -7,9 +8,9 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  // Batch controls (safe defaults; can tweak via query)
-  const limit = Math.min(parseInt(req.query.limit, 10) || 25, 200); // sync 25 at a time
-  const days  = Math.min(parseInt(req.query.days, 10)  || 14, 90);  // last 14 days max
+  // Batch controls (fast + safe defaults)
+  const limit = Math.min(parseInt(req.query.limit, 10) || 25, 200);
+  const days  = Math.min(parseInt(req.query.days, 10)  || 14, 90);
   const sinceDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
   const client = new ImapFlow({
@@ -24,47 +25,46 @@ export default async function handler(req, res) {
     await client.connect();
     lock = await client.getMailboxLock('INBOX');
 
-    // 1) Unseen messages within recent window
+    // unseen within window
     const uids = await client.search({ seen: false, since: sinceDate });
     if (!uids || uids.length === 0) {
       return res.status(200).json({ status: 'no-unseen', scanned: 0, fetched: 0 });
     }
 
-    // 2) Take the most recent N
+    // most recent N
     const selected = uids.slice(-limit);
 
-    // 3) Fetch ENVELOPE+FLAGS only (fast) — no BODY parsing
     let fetched = 0;
-    for await (const msg of client.fetch(selected, { envelope: true, flags: true })) {
+    // fetch envelope + source so we can parse and store body
+    for await (const msg of client.fetch(selected, { envelope: true, source: true, flags: true })) {
       const flags = Array.isArray(msg.flags) ? msg.flags : [];
-      if (flags.includes('\\Seen')) continue; // defensive
+      if (flags.includes('\\Seen')) continue;
 
       const env = msg.envelope || {};
-      const msg_id    = env.messageId || String(msg.uid);
-      const from_addr = env.from?.[0]?.address || env.from?.[0]?.name || '';
-      const subject   = env.subject || '';
-      const created_at = env.date ? new Date(env.date) : new Date();
+      let parsed = {};
+      try { parsed = await simpleParser(msg.source); } catch {}
 
-      // 4) UPSERT by msg_id (your DB already has UNIQUE(msg_id))
+      const msg_id = parsed?.messageId || env?.messageId || String(msg.uid);
+      const from_addr = parsed?.from?.text || env?.from?.[0]?.address || '';
+      const subject = parsed?.subject || env?.subject || '';
+      const body = parsed?.text || '';
+      const dt = parsed?.date || env?.date || new Date();
+      const created_at = dt ? new Date(dt) : new Date();
+
+      // UPSERT by msg_id (you already have UNIQUE(msg_id))
       const { error: upsertErr } = await supabase
         .from('inbox_messages')
         .upsert(
-          [{ msg_id, from_addr, subject, body: '', created_at, direction: 'inbound' }],
+          [{ msg_id, from_addr, subject, body, created_at, direction: 'inbound' }],
           { onConflict: 'msg_id' }
         );
+      if (upsertErr) console.error('Supabase upsert error:', upsertErr.message);
 
-      if (upsertErr) {
-        // Log and continue (non-fatal)
-        console.error('Supabase upsert error:', upsertErr.message);
-      }
-
-      // 5) Mark seen so we don't reprocess next time
-      try { await client.messageFlagsAdd(msg.uid, ['\\Seen']); } catch (e) {}
-
+      try { await client.messageFlagsAdd(msg.uid, ['\\Seen']); } catch {}
       fetched++;
     }
 
-    return res.status(200).json({ status: 'completed', scanned: uids.length, fetched, limit, days });
+    return res.status(200).json({ status: 'completed', fetched, limit, days });
   } catch (err) {
     console.error('IMAP sync error:', err);
     return res.status(500).json({ error: err.message });
@@ -73,3 +73,4 @@ export default async function handler(req, res) {
     try { await client.logout(); } catch {}
   }
 }
+
