@@ -2,9 +2,7 @@
 import { supabase } from '../../lib/supabaseClient';
 
 export default async function handler(req, res) {
-  if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
+  if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
   const page = parseInt(req.query.page, 10) || 1;
   const pageSize = parseInt(req.query.pageSize, 10) || 25;
@@ -20,14 +18,20 @@ export default async function handler(req, res) {
 
     if (error) throw error;
 
-    // de-dupe by msg_id (safety)
+    // Aggressive de-dupe across unreliable IDs.
     const seen = new Set();
-    const messages = rows.filter((m) => {
-      if (!m || !m.msg_id) return true;
-      if (seen.has(m.msg_id)) return false;
-      seen.add(m.msg_id);
-      return true;
-    });
+    const keyOf = (m) =>
+      (m.gm_msgid && `g:${m.gm_msgid}`) ||
+      (m.msg_id && `m:${m.msg_id}`) ||
+      `f:${m.from_addr}|s:${m.subject}|d:${m.created_at ? new Date(m.created_at).toISOString() : ''}`;
+
+    const messages = [];
+    for (const m of rows) {
+      const k = keyOf(m);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      messages.push(m);
+    }
 
     res.status(200).json({ messages, total: messages.length });
   } catch (err) {
