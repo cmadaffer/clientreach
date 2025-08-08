@@ -52,7 +52,9 @@ export default function InboxPage() {
   const deduped = useMemo(() => {
     const map = new Map();
     for (const m of messagesRaw) {
-      const k = (m && (m.msg_id || `${m.from_addr || ''}|${m.subject || ''}|${m.created_at || ''}`)) || Math.random().toString(36);
+      const k =
+        (m && (m.msg_id || `${m.from_addr || ''}|${m.subject || ''}|${m.created_at || ''}`)) ||
+        Math.random().toString(36);
       if (!map.has(k)) map.set(k, m);
     }
     return Array.from(map.values());
@@ -157,10 +159,11 @@ export default function InboxPage() {
         }),
       });
       const txt = await res.text();
-      const ok = res.ok && (txt ? (JSON.parse(txt).ok === true) : false);
+      let ok = false;
+      try { ok = res.ok && JSON.parse(txt).ok === true; } catch {}
       if (!ok) {
         let errMsg = 'Send failed';
-        try { errMsg = (JSON.parse(txt).error) || errMsg; } catch {}
+        try { errMsg = JSON.parse(txt).error || errMsg; } catch {}
         throw new Error(errMsg);
       }
       setSendOk('Sent ✔');
@@ -267,98 +270,4 @@ export default function InboxPage() {
                     {sendOk && <span style={okText}>{sendOk}</span>}
                     {sendErr && <span style={errorText}>{sendErr}</span>}
                   </div>
-                  <div style={hint}>Uses SMTP env: SMTP_HOST/PORT/SECURE/USER/PASS (or IMAP_* fallback) and SMTP_FROM</div>
-                </div>
-              </div>
-            </>
-          ) : (
-            <div style={emptyDetail}>Select a message</div>
-          )}
-        </main>
-      </div>
-
-      <div style={paginationBar}>
-        <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1} style={btn}>← Prev</button>
-        <span style={pageInfo}>Page {page} of {totalPages}</span>
-        <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages} style={btn}>Next →</button>
-      </div>
-    </div>
-  );
-}
-
-/* ---------- Helpers ---------- */
-function formatRelative(ts) {
-  if (!ts) return '—';
-  const d = new Date(ts);
-  const diffMs = Date.now() - d.getTime();
-  const mins = Math.floor(diffMs / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.floor(hrs / 24);
-  if (days < 7) return `${days}d ago`;
-  return d.toLocaleDateString();
-}
-
-/* ---------- Styles ---------- */
-const wrap = { fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif', background: '#f8f9fb', minHeight: '100vh' };
-const headerBar = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid #eee', background: '#fff', position: 'sticky', top: 0, zIndex: 10 };
-const logo = { fontSize: '18px', fontWeight: 700, color: '#111' };
-const pillRow = { display: 'flex', gap: 8 };
-const pill = { fontSize: 12, background: '#eef2ff', color: '#1e40af', border: '1px solid #dbeafe', padding: '4px 8px', borderRadius: 999 };
-
-const toolbar = { display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', padding: '12px 16px' };
-const filters = { display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' };
-const actions = { display: 'flex', alignItems: 'center', gap: 12 };
-const search = { width: 260, padding: '8px 10px', border: '1px solid #ccc', borderRadius: 6, fontSize: 14, background: '#fff' };
-const segmented = { display: 'inline-flex', border: '1px solid #ddd', borderRadius: 8, overflow: 'hidden' };
-const segBtn = { padding: '6px 10px', fontSize: 13, border: 'none', background: '#fff', cursor: 'pointer' };
-const segBtnActive = { background: '#111', color: '#fff' };
-
-const grid = { display: 'grid', gridTemplateColumns: '360px 1fr', height: 'calc(100vh - 160px)', gap: '16px', padding: '0 16px 16px 16px' };
-const listPane = { borderRight: '1px solid #eee', overflowY: 'auto', background: '#fff', borderRadius: 8, padding: 8 };
-const detailPane = { padding: 16, overflowY: 'auto' };
-
-const listItem = { padding: '12px', borderRadius: 8, margin: '6px 0', background: '#fff', boxShadow: '0 1px 2px rgba(0,0,0,0.05)', cursor: 'pointer', border: '1px solid #eee' };
-const listItemActive = { background: '#e8f0fe', borderColor: '#c7d2fe' };
-const rowTop = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 };
-const rowBottom = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 6 };
-const from = { fontWeight: 600, fontSize: 14, color: '#222', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '70%' };
-const subject = { fontSize: 13, color: '#333', marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' };
-const dateText = { fontSize: 12, color: '#777' };
-const badge = (direction) => ({
-  fontSize: 11,
-  padding: '3px 8px',
-  borderRadius: 999,
-  border: '1px solid',
-  borderColor: direction === 'outbound' ? '#bbf7d0' : '#dbeafe',
-  background: direction === 'outbound' ? '#ecfdf5' : '#eff6ff',
-  color: direction === 'outbound' ? '#065f46' : '#1e40af',
-});
-
-const emptyList = { padding: 16, color: '#999' };
-const emptyDetail = { padding: 16, color: '#999' };
-
-const detailSubject = { fontSize: 20, fontWeight: 700, marginBottom: 8, color: '#111' };
-const metaLine = { fontSize: 14, color: '#444', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' };
-const dot = { width: 4, height: 4, borderRadius: 4, background: '#ccc', display: 'inline-block' };
-
-const twoCols = { display: 'grid', gridTemplateColumns: '1fr 420px', gap: 16, alignItems: 'start', marginTop: 12 };
-const messageBox = { background: '#fff', border: '1px solid #eee', borderRadius: 8, padding: 12, minHeight: 220 };
-const composer = { background: '#fff', border: '1px solid #eee', borderRadius: 8, padding: 12 };
-const fieldRow = { display: 'grid', gridTemplateColumns: '80px 1fr', gap: 8, alignItems: 'center', marginBottom: 8 };
-const label = { fontSize: 13, color: '#444' };
-const input = { width: '100%', padding: '8px 10px', border: '1px solid #ccc', borderRadius: 6, fontSize: 14 };
-const textarea = { width: '100%', padding: 10, border: '1px solid #ccc', borderRadius: 6, fontSize: 14, minHeight: 220, resize: 'vertical' };
-const composeActions = { display: 'flex', alignItems: 'center', gap: 12, marginTop: 8 };
-const hint = { fontSize: 12, color: '#777', marginTop: 8 };
-
-const bodyBox = { whiteSpace: 'pre-wrap', fontSize: 15, lineHeight: 1.5, color: '#222' };
-
-const paginationBar = { display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 12, padding: '12px 16px' };
-const btn = { padding: '8px 14px', border: '1px solid #ccc', background: '#fff', cursor: 'pointer', borderRadius: 6, fontSize: 14 };
-const btnPrimary = { padding: '8px 14px', border: 'none', background: '#0070f3', color: '#fff', cursor: 'pointer', borderRadius: 6, fontSize: 14 };
-const errorText = { color: 'red', maxWidth: 600, whiteSpace: 'normal' };
-const okText = { color: 'green', marginLeft: 12 };
-const center = { textAlign: 'center', marginTop: '2rem', color: '#888' };
+                  <div style={hint}>Uses SMTP env: SMTP_HOST/PORT/SECURE/USER/PASS (or IMAP_* fallback) and SMTP_FROM</di_*
