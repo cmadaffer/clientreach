@@ -1,5 +1,5 @@
 // pages/api/inbox-data.js
-import { supabase } from '../../lib/supabaseClient'
+import { supabase } from '../../lib/supabaseClient';
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') {
@@ -20,7 +20,7 @@ export default async function handler(req, res) {
 
     if (error) throw error;
 
-    // Deduplicate by msg_id in code
+    // client-side de-dupe by msg_id
     const seen = new Set();
     const deduped = messages.filter((m) => {
       if (seen.has(m.msg_id)) return false;
