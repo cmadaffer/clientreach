@@ -8,17 +8,18 @@ export default function InboxPage() {
   const [page, setPage] = useState(1);
   const pageSize = 25;
 
-  // Auto-refresh list every 60s
+  // Auto-refresh list every 60s; avoid refetch on tab focus to prevent UI jumps
   const { data, error, mutate } = useSWR(
     `/api/inbox-data?page=${page}&pageSize=${pageSize}`,
     fetcher,
     { refreshInterval: 60_000, revalidateOnFocus: false }
   );
 
-  const [syncing, setSyncing] = useState(false);
-  const [syncError, setSyncError] = useState('');
+  // Selection & fetch state
   const [selected, setSelected] = useState(null);
   const [loadingBody, setLoadingBody] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [syncError, setSyncError] = useState('');
 
   // Reply state
   const [to, setTo] = useState('');
@@ -28,31 +29,82 @@ export default function InboxPage() {
   const [sendErr, setSendErr] = useState('');
   const [sendOk, setSendOk] = useState('');
 
+  // UI polish: search & filters
+  const [q, setQ] = useState('');
+  const [dir, setDir] = useState('all');         // 'all' | 'inbound' | 'outbound'
+  const [days, setDays] = useState('all');       // 'all' | '7' | '30'
+
   const messagesRaw = Array.isArray(data?.messages) ? data.messages : [];
 
-  // Client-side safety dedupe
-  const messages = useMemo(() => {
+  // Deduplicate defensively
+  const deduped = useMemo(() => {
     const makeKey = (m) => m?.msg_id || `${m?.from_addr || ''}|${m?.subject || ''}|${m?.created_at || ''}`;
     const map = new Map();
     for (const m of messagesRaw) {
       const k = makeKey(m);
       if (!map.has(k)) map.set(k, m);
     }
+    // Already sorted desc by API; keep order
     return Array.from(map.values());
   }, [messagesRaw]);
 
-  const total = typeof data?.total === 'number' ? data.total : messages.length;
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  // Filtered view (client-side)
+  const filtered = useMemo(() => {
+    const qNorm = (q || '').trim().toLowerCase();
+    const cutoff =
+      days === 'all'
+        ? null
+        : new Date(Date.now() - Number(days) * 24 * 60 * 60 * 1000);
 
-  // When a message is selected and has no body, lazy-load it once
+    return deduped.filter((m) => {
+      if (dir !== 'all' && (m.direction || 'inbound') !== dir) return false;
+
+      if (cutoff) {
+        const d = m.created_at ? new Date(m.created_at) : null;
+        if (!d || d < cutoff) return false;
+      }
+
+      if (!qNorm) return true;
+
+      const hay =
+        ((m.from_addr || '') + ' ' + (m.subject || '') + ' ' + (m.body || '')).toLowerCase();
+      return hay.includes(qNorm);
+    });
+  }, [deduped, dir, days, q]);
+
+  // Pagination after filters
+  const total = filtered.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const start = (page - 1) * pageSize;
+  const end = start + pageSize;
+  const pageRows = filtered.slice(start, end);
+
+  // Maintain a valid selection
+  useEffect(() => {
+    if (!selected) {
+      if (pageRows.length) setSelected(pageRows[0]);
+      return;
+    }
+    // If selected fell out of the current page/filter, keep it (don’t force switch)
+  }, [pageRows, selected]);
+
+  // Lazy-load body for the selected message once
   useEffect(() => {
     const m = selected;
     if (!m) return;
 
     // Pre-fill reply fields
     setTo(m.from_addr || '');
-    setSubj(m.subject ? (m.subject.toLowerCase().startsWith('re:') ? m.subject : `Re: ${m.subject}`) : 'Re:');
-    setBody(`\n\n--- On ${m.created_at ? new Date(m.created_at).toLocaleString() : ''}, ${m.from_addr || ''} wrote:\n`);
+    setSubj(
+      m.subject
+        ? (m.subject.toLowerCase().startsWith('re:') ? m.subject : `Re: ${m.subject}`)
+        : 'Re:'
+    );
+    setBody(
+      `\n\n--- On ${m.created_at ? new Date(m.created_at).toLocaleString() : ''}, ${
+        m.from_addr || ''
+      } wrote:\n${(m.body || '').slice(0, 500)}`
+    );
 
     if (m.body && m.body.trim()) return;
 
@@ -62,10 +114,12 @@ export default function InboxPage() {
         const res = await fetch(`/api/message-body?msg_id=${encodeURIComponent(m.msg_id)}`);
         const json = await res.json();
         const loaded = (json && json.body) || '';
-        // merge body into local state copy
         setSelected({ ...m, body: loaded });
-      } catch { /* ignore */ }
-      finally { setLoadingBody(false); }
+      } catch {
+        // ignore
+      } finally {
+        setLoadingBody(false);
+      }
     })();
   }, [selected]);
 
@@ -97,7 +151,6 @@ export default function InboxPage() {
     setSending(true);
     setSendErr('');
     setSendOk('');
-
     try {
       const res = await fetch('/api/send-email', {
         method: 'POST',
@@ -113,7 +166,7 @@ export default function InboxPage() {
       if (!res.ok || !json?.ok) throw new Error(json?.error || 'Send failed');
 
       setSendOk('Sent ✔');
-      await mutate(); // pull in the logged outbound item
+      await mutate(); // pull in logged outbound
       setTimeout(() => setSendOk(''), 3000);
     } catch (e) {
       setSendErr(cleanError(e.message));
@@ -127,145 +180,44 @@ export default function InboxPage() {
   if (!data) return <p style={center}>Loading…</p>;
   if (data.error) return <p style={center}>Server error: {data.error}</p>;
 
-  const selectedMsg = selected || messages[0] || null;
+  const selectedMsg = selected || null;
 
   return (
     <div style={wrap}>
       <div style={headerBar}>
         <h1 style={logo}>ClientReach</h1>
+        <div style={pillRow}>
+          <span style={pill}>AI Email Ops</span>
+        </div>
       </div>
 
       <div style={toolbar}>
-        <button onClick={handleSync} disabled={syncing} style={btnPrimary}>
-          {syncing ? 'Syncing…' : 'Sync Inbox'}
-        </button>
-        {syncError && <span style={errorText}>{syncError}</span>}
-      </div>
-
-      <div style={grid}>
-        <aside style={listPane}>
-          {messages.map((m, idx) => {
-            const active = selectedMsg && (selectedMsg.id === m.id || selectedMsg.msg_id === m.msg_id);
-            return (
-              <div
-                key={m.id || m.msg_id || idx}
-                onClick={() => setSelected(m)}
-                style={{ ...listItem, ...(active ? listItemActive : null) }}
-              >
-                <div style={from}>{m.from_addr || '—'}</div>
-                <div style={subject}>{m.subject || '(no subject)'}</div>
-                <div style={dateText}>
-                  {m.created_at ? new Date(m.created_at).toLocaleString() : '—'}
-                </div>
-              </div>
-            );
-          })}
-          {messages.length === 0 && <div style={emptyList}>No messages</div>}
-        </aside>
-
-        <main style={detailPane}>
-          {selectedMsg ? (
-            <>
-              <h2 style={detailSubject}>{selectedMsg.subject || '(no subject)'}</h2>
-              <div style={metaLine}><strong>From:</strong>&nbsp;{selectedMsg.from_addr || '—'}</div>
-              <div style={metaLine}>
-                <strong>Date:</strong>&nbsp;
-                {selectedMsg.created_at ? new Date(selectedMsg.created_at).toLocaleString() : '—'}
-              </div>
-
-              <div style={twoCols}>
-                <div style={messageBox}>
-                  <div style={bodyBox}>
-                    {loadingBody ? 'Loading message…' : (selectedMsg.body || 'No preview available.')}
-                  </div>
-                </div>
-
-                <div style={composer}>
-                  <div style={fieldRow}>
-                    <label style={label}>To</label>
-                    <input style={input} value={to} onChange={(e) => setTo(e.target.value)} />
-                  </div>
-                  <div style={fieldRow}>
-                    <label style={label}>Subject</label>
-                    <input style={input} value={subj} onChange={(e) => setSubj(e.target.value)} />
-                  </div>
-                  <textarea
-                    style={textarea}
-                    rows={10}
-                    value={body}
-                    onChange={(e) => setBody(e.target.value)}
-                    placeholder="Type your reply…"
-                  />
-                  <div style={composeActions}>
-                    <button onClick={handleSend} disabled={sending || !to || !subj || !body} style={btnPrimary}>
-                      {sending ? 'Sending…' : 'Send'}
-                    </button>
-                    {sendOk && <span style={okText}>{sendOk}</span>}
-                    {sendErr && <span style={errorText}>{sendErr}</span>}
-                  </div>
-                  <div style={hint}>
-                    Uses SMTP env: SMTP_HOST/PORT/SECURE/USER/PASS (or IMAP_* fallback) and SMTP_FROM
-                  </div>
-                </div>
-              </div>
-            </>
-          ) : (
-            <div style={emptyDetail}>Select a message</div>
-          )}
-        </main>
-      </div>
-
-      <div style={paginationBar}>
-        <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1} style={btn}>
-          ← Prev
-        </button>
-        <span style={pageInfo}>Page {page} of {totalPages}</span>
-        <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages} style={btn}>
-          Next →
-        </button>
-      </div>
-    </div>
-  );
-}
-
-// --- Styles ---
-const wrap = { fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' };
-const headerBar = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid #eee' };
-const logo = { fontSize: '18px', fontWeight: 700, color: '#111' };
-
-const toolbar = { display: 'flex', gap: 12, alignItems: 'center', padding: '12px 16px' };
-const errorText = { color: 'red', maxWidth: 600, whiteSpace: 'normal' };
-const okText = { color: 'green', marginLeft: 12 };
-
-const grid = { display: 'grid', gridTemplateColumns: '320px 1fr', height: 'calc(100vh - 140px)', gap: '16px', padding: '0 16px 16px 16px' };
-const listPane = { borderRight: '1px solid #eee', overflowY: 'auto' };
-const detailPane = { padding: 16, overflowY: 'auto' };
-
-const listItem = { padding: '12px', borderRadius: 8, margin: '6px 0', background: '#fff', boxShadow: '0 1px 2px rgba(0,0,0,0.05)', cursor: 'pointer' };
-const listItemActive = { background: '#e8f0fe' };
-const from = { fontWeight: 600, fontSize: 14, color: '#222' };
-const subject = { fontSize: 13, color: '#333', marginTop: 4 };
-const dateText = { fontSize: 12, color: '#777', marginTop: 2 };
-const emptyList = { padding: 16, color: '#999' };
-const emptyDetail = { padding: 16, color: '#999' };
-
-const detailSubject = { fontSize: 20, fontWeight: 700, marginBottom: 8 };
-const metaLine = { fontSize: 14, color: '#444', marginBottom: 6 };
-
-const twoCols = { display: 'grid', gridTemplateColumns: '1fr 400px', gap: 16, alignItems: 'start', marginTop: 12 };
-const messageBox = { background: '#fff', border: '1px solid #eee', borderRadius: 8, padding: 12, minHeight: 200 };
-const composer = { background: '#fff', border: '1px solid #eee', borderRadius: 8, padding: 12 };
-const fieldRow = { display: 'grid', gridTemplateColumns: '80px 1fr', gap: 8, alignItems: 'center', marginBottom: 8 };
-const label = { fontSize: 13, color: '#444' };
-const input = { width: '100%', padding: '8px 10px', border: '1px solid #ccc', borderRadius: 6, fontSize: 14 };
-const textarea = { width: '100%', padding: 10, border: '1px solid #ccc', borderRadius: 6, fontSize: 14, minHeight: 220 };
-const composeActions = { display: 'flex', alignItems: 'center', gap: 12, marginTop: 8 };
-const hint = { fontSize: 12, color: '#777', marginTop: 8 };
-
-const bodyBox = { whiteSpace: 'pre-wrap', fontSize: 15, lineHeight: 1.5, color: '#222' };
-
-const paginationBar = { display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 12, padding: '12px 16px' };
-const btn = { padding: '8px 14px', border: '1px solid #ccc', background: '#fff', cursor: 'pointer', borderRadius: 6, fontSize: 14 };
-const btnPrimary = { padding: '8px 14px', border: 'none', background: '#0070f3', color: '#fff', cursor: 'pointer', borderRadius: 6, fontSize: 14 };
-const pageInfo = { fontSize: 14 };
-const center = { textAlign: 'center', marginTop: '2rem', color: '#888' };
+        <div style={filters}>
+          <input
+            style={search}
+            value={q}
+            onChange={(e) => { setQ(e.target.value); setPage(1); }}
+            placeholder="Search from / subject / body…"
+          />
+          <div style={segmented}>
+            <button
+              onClick={() => { setDir('all'); setPage(1); }}
+              style={{ ...segBtn, ...(dir === 'all' ? segBtnActive : null) }}
+            >All</button>
+            <button
+              onClick={() => { setDir('inbound'); setPage(1); }}
+              style={{ ...segBtn, ...(dir === 'inbound' ? segBtnActive : null) }}
+            >Inbound</button>
+            <button
+              onClick={() => { setDir('outbound'); setPage(1); }}
+              style={{ ...segBtn, ...(dir === 'outbound' ? segBtnActive : null) }}
+            >Outbound</button>
+          </div>
+          <div style={segmented}>
+            <button
+              onClick={() => { setDays('all'); setPage(1); }}
+              style={{ ...segBtn, ...(days === 'all' ? segBtnActive : null) }}
+            >All time</button>
+            <button
+              onClick={() => { setDays('7'); setPage(1); }}
+              style={{ ...segBtn, ...(days === '7' ? segBtnActive : n
