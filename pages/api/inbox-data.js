@@ -6,34 +6,38 @@ export default async function handler(req, res) {
 
   const page = parseInt(req.query.page, 10) || 1;
   const pageSize = parseInt(req.query.pageSize, 10) || 25;
-  const from = (page - 1) * pageSize;
-  const to = page * pageSize - 1;
 
   try {
+    // Pull a bigger window, then dedupe, then paginate in memory.
     const { data: rows = [], error } = await supabase
       .from('inbox_messages')
       .select('*')
       .order('created_at', { ascending: false })
-      .range(from, to);
+      .limit(300); // adjust if you want more/less
 
     if (error) throw error;
 
-    // Aggressive de-dupe across unreliable IDs.
-    const seen = new Set();
-    const keyOf = (m) =>
-      (m.gm_msgid && `g:${m.gm_msgid}`) ||
-      (m.msg_id && `m:${m.msg_id}`) ||
-      `f:${m.from_addr}|s:${m.subject}|d:${m.created_at ? new Date(m.created_at).toISOString() : ''}`;
+    // Robust dedupe key priority: msg_id → gm_msgid → composite fallback
+    const makeKey = (m) => {
+      if (m?.msg_id) return `m:${m.msg_id}`;
+      if (m?.gm_msgid) return `g:${m.gm_msgid}`;
+      const d = m?.created_at ? new Date(m.created_at).toISOString() : '';
+      return `f:${m?.from_addr || ''}|s:${m?.subject || ''}|d:${d}`;
+    };
 
-    const messages = [];
+    const map = new Map();
     for (const m of rows) {
-      const k = keyOf(m);
-      if (seen.has(k)) continue;
-      seen.add(k);
-      messages.push(m);
+      const k = makeKey(m);
+      if (!map.has(k)) map.set(k, m); // keep first (newest due to sort)
     }
+    const deduped = Array.from(map.values());
 
-    res.status(200).json({ messages, total: messages.length });
+    // paginate after dedupe
+    const start = (page - 1) * pageSize;
+    const end = start + pageSize;
+    const slice = deduped.slice(start, end);
+
+    res.status(200).json({ messages: slice, total: deduped.length });
   } catch (err) {
     console.error('Inbox data error:', err);
     res.status(500).json({ error: err.message });
