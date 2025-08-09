@@ -1,123 +1,149 @@
 // pages/inbox.js
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import useSWR from 'swr';
 
-// generic JSON fetcher with safe parsing
 const fetcher = async (url) => {
   const res = await fetch(url, { headers: { Accept: 'application/json' } });
   const text = await res.text();
   const ct = (res.headers.get('content-type') || '').toLowerCase();
   try {
-    return ct.includes('application/json') ? JSON.parse(text) : { error: `Non-JSON from ${url}`, status: res.status, body: text.slice(0, 300) };
+    return ct.includes('application/json')
+      ? JSON.parse(text)
+      : { error: `Non-JSON from ${url}`, status: res.status, body: text.slice(0, 300) };
   } catch (e) {
     return { error: `Parse error from ${url}: ${e.message}`, status: res.status, body: text.slice(0, 300) };
   }
 };
 
 export default function InboxPage() {
-  const [page, setPage] = useState(1);
   const pageSize = 25;
+  const [page, setPage] = useState(1);
 
-  // manual load only — no auto refresh
+  // NO auto-polling; manual only
   const { data, error, mutate, isValidating } = useSWR(
     `/api/inbox-data?page=${page}&pageSize=${pageSize}`,
     fetcher,
     { refreshInterval: 0, revalidateOnFocus: false }
   );
 
-  const [selected, setSelected] = useState(null);
-  const [loadingBody, setLoadingBody] = useState(false);
-  const [syncing, setSyncing] = useState(false);
-  const [syncError, setSyncError] = useState('');
+  const apiError = data?.error ? String(data.error) : null;
+  const messagesRaw = Array.isArray(data?.messages) ? data.messages : [];
 
-  // compose state
-  const [to, setTo] = useState('');
-  const [subj, setSubj] = useState('');
-  const [body, setBody] = useState('');
-  const [sending, setSending] = useState(false);
-  const [sendErr, setSendErr] = useState('');
-  const [sendOk, setSendOk] = useState('');
+  // ---------- Stable normalize/sort/dedup ----------
+  const normalized = useMemo(() => {
+    const rows = messagesRaw.map((m) => {
+      const key = m?.msg_id || `${m?.from_addr || ''}|${m?.subject || ''}|${m?.created_at || ''}`;
+      const ts = m?.created_at ? new Date(m.created_at).getTime() : 0;
+      return { ...m, _key: key, _ts: Number.isFinite(ts) ? ts : 0 };
+    });
+    // sort newest → oldest (stable)
+    rows.sort((a, b) => b._ts - a._ts);
+    // de-dupe by key (keep first/newest)
+    const seen = new Set();
+    const out = [];
+    for (const r of rows) {
+      if (seen.has(r._key)) continue;
+      seen.add(r._key);
+      out.push(r);
+    }
+    return out;
+  }, [messagesRaw]);
 
-  // smart reply state
-  const [generating, setGenerating] = useState(false);
-
-  // filters
+  // ---------- Filters ----------
   const [q, setQ] = useState('');
   const [dir, setDir] = useState('all');   // all | inbound | outbound
   const [days, setDays] = useState('all'); // all | 7 | 30
-
-  const apiError = data && data.error ? String(data.error) : null;
-  const messagesRaw = Array.isArray(data?.messages) ? data.messages : [];
-
-  // de-dupe rows
-  const deduped = useMemo(() => {
-    const map = new Map();
-    for (const m of messagesRaw) {
-      const k = (m?.msg_id) || `${m?.from_addr || ''}|${m?.subject || ''}|${m?.created_at || ''}`;
-      if (!map.has(k)) map.set(k, m);
-    }
-    return Array.from(map.values());
-  }, [messagesRaw]);
-
-  // apply filters
   const filtered = useMemo(() => {
-    const qNorm = (q || '').trim().toLowerCase();
-    const cutoff = days === 'all' ? null : new Date(Date.now() - Number(days) * 24 * 60 * 60 * 1000);
-    return deduped.filter((m) => {
+    const qNorm = q.trim().toLowerCase();
+    const cutoff = days === 'all' ? null : Date.now() - Number(days) * 86400000;
+    return normalized.filter((m) => {
       if (!m) return false;
       const direction = m.direction || 'inbound';
       if (dir !== 'all' && direction !== dir) return false;
-      if (cutoff) {
-        const d = m.created_at ? new Date(m.created_at) : null;
-        if (!d || d < cutoff) return false;
-      }
+      if (cutoff && m._ts < cutoff) return false;
       if (!qNorm) return true;
       const hay = `${m.from_addr || ''} ${m.subject || ''} ${m.body || ''}`.toLowerCase();
       return hay.includes(qNorm);
     });
-  }, [deduped, dir, days, q]);
+  }, [normalized, dir, days, q]);
 
+  // ---------- Paging ----------
   const total = filtered.length;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const start = (page - 1) * pageSize;
   const end = start + pageSize;
   const pageRows = filtered.slice(start, end);
 
-  // pick first message on page
-  useEffect(() => {
-    if (!selected && pageRows.length) setSelected(pageRows[0]);
-  }, [pageRows, selected]);
+  // ---------- Selection (by stable id) ----------
+  const [selectedId, setSelectedId] = useState(null);
+  const selectedMsg = useMemo(
+    () => normalized.find((m) => m._key === selectedId) || null,
+    [normalized, selectedId]
+  );
 
-  // load full body for selected (if needed)
+  // Only auto-select if NOTHING is selected yet
   useEffect(() => {
-    const m = selected;
+    if (!selectedId && pageRows.length) {
+      setSelectedId(pageRows[0]._key);
+    }
+  }, [pageRows, selectedId]);
+
+  // ---------- Message body cache (never replace selection object) ----------
+  const [bodyCache, setBodyCache] = useState({});
+  const [loadingBody, setLoadingBody] = useState(false);
+  const loadingKeyRef = useRef(null);
+
+  useEffect(() => {
+    const m = selectedMsg;
     if (!m) return;
 
-    setTo(m.from_addr || '');
-    setSubj(m.subject ? (m.subject.toLowerCase().startsWith('re:') ? m.subject : `Re: ${m.subject}`) : 'Re:');
-    setBody(
-      `\n\n--- On ${m.created_at ? new Date(m.created_at).toLocaleString() : ''}, ${m.from_addr || ''} wrote:\n${(m.body || '').slice(0, 500)}`
-    );
+    const cached = bodyCache[m._key];
+    const hasBody = (m.body && m.body.trim().length > 0) || (cached && cached.trim().length > 0);
+    if (hasBody) return; // done
 
-    if (m.body && m.body.trim()) return;
+    // prevent duplicate fetches if user clicks around
+    if (loadingKeyRef.current === m._key) return;
 
+    loadingKeyRef.current = m._key;
+    setLoadingBody(true);
     (async () => {
-      setLoadingBody(true);
       try {
-        const res = await fetch(`/api/message-body?msg_id=${encodeURIComponent(m.msg_id || '')}`);
-        const ct = (res.headers.get('content-type') || '').toLowerCase();
+        const res = await fetch(`/api/message-body?msg_id=${encodeURIComponent(m.msg_id || m._key)}`);
         const txt = await res.text();
-        const json = ct.includes('application/json') ? JSON.parse(txt) : { body: '' };
-        const loaded = (json && json.body) || '';
-        setSelected({ ...m, body: loaded });
+        const json = (() => {
+          try { return JSON.parse(txt); } catch { return { body: '' }; }
+        })();
+        setBodyCache((prev) => ({ ...prev, [m._key]: json?.body || '' }));
       } catch {
         // ignore
       } finally {
         setLoadingBody(false);
+        loadingKeyRef.current = null;
       }
     })();
-  }, [selected]);
+  }, [selectedMsg, bodyCache]);
 
+  const selectedBody = selectedMsg
+    ? (bodyCache[selectedMsg._key] || selectedMsg.body || '')
+    : '';
+
+  // ---------- Composer state, driven by selected message ----------
+  const [to, setTo] = useState('');
+  const [subj, setSubj] = useState('');
+  const [body, setBody] = useState('');
+  useEffect(() => {
+    const m = selectedMsg;
+    if (!m) return;
+    const computedSubject = m.subject ? (m.subject.toLowerCase().startsWith('re:') ? m.subject : `Re: ${m.subject}`) : 'Re:';
+    const quoted = `\n\n--- On ${m.created_at ? new Date(m.created_at).toLocaleString() : ''}, ${m.from_addr || ''} wrote:\n${(selectedBody || '').slice(0, 500)}`;
+    setTo(m.from_addr || '');
+    setSubj(computedSubject);
+    setBody(quoted);
+  }, [selectedMsg, selectedBody]);
+
+  // ---------- Actions ----------
+  const [syncing, setSyncing] = useState(false);
+  const [syncError, setSyncError] = useState('');
   const cleanError = (txt) =>
     (String(txt || '')).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200);
 
@@ -143,6 +169,10 @@ export default function InboxPage() {
     await mutate();
   };
 
+  const [sending, setSending] = useState(false);
+  const [sendErr, setSendErr] = useState('');
+  const [sendOk, setSendOk] = useState('');
+
   const handleSend = async () => {
     setSending(true);
     setSendErr('');
@@ -155,7 +185,7 @@ export default function InboxPage() {
           to,
           subject: subj,
           text: body,
-          inReplyTo: selected?.msg_id || null,
+          inReplyTo: selectedMsg?.msg_id || null,
         }),
       });
       const txt = await res.text();
@@ -177,8 +207,9 @@ export default function InboxPage() {
     }
   };
 
+  const [generating, setGenerating] = useState(false);
   const handleSmartReply = async () => {
-    if (!selected) return;
+    if (!selectedMsg) return;
     setGenerating(true);
     setSendErr('');
     setSendOk('');
@@ -187,9 +218,9 @@ export default function InboxPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          messageBody: (selected.body || '').trim(), // may be empty; API handles it
-          subject: selected.subject || '',
-          sender: selected.from_addr || '',
+          messageBody: (selectedBody || '').trim(), // can be empty; API handles it
+          subject: selectedMsg.subject || '',
+          sender: selectedMsg.from_addr || '',
         }),
       });
       const json = await res.json();
@@ -205,13 +236,12 @@ export default function InboxPage() {
     }
   };
 
-  // guards
+  // ---------- Guards ----------
   if (error) return <p style={center}>Failed to load: {String(error.message || error)}</p>;
   if (apiError) return <p style={center}>API error: {cleanError(apiError)}</p>;
   if (!data) return <p style={center}>Loading…</p>;
 
-  const selectedMsg = selected || null;
-
+  // ---------- UI ----------
   return (
     <div style={wrap}>
       <div style={headerBar}>
@@ -252,13 +282,13 @@ export default function InboxPage() {
 
       <div style={grid}>
         <aside style={listPane}>
-          {pageRows.map((m, idx) => {
-            const active = selectedMsg && (selectedMsg.id === m.id || selectedMsg.msg_id === m.msg_id);
+          {pageRows.map((m) => {
+            const active = selectedId === m._key;
             const isImportant = m?.important === true;
             return (
               <div
-                key={m?.id || m?.msg_id || idx}
-                onClick={() => setSelected(m)}
+                key={m._key}
+                onClick={() => setSelectedId(m._key)}
                 style={{ ...listItem, ...(active ? listItemActive : null) }}
                 title={m?.created_at ? new Date(m.created_at).toLocaleString() : ''}
               >
@@ -298,7 +328,7 @@ export default function InboxPage() {
 
               <div style={twoCols}>
                 <div style={messageBox}>
-                  <div style={bodyBox}>{loadingBody ? 'Loading message…' : (selectedMsg.body || 'No preview available.')}</div>
+                  <div style={bodyBox}>{loadingBody ? 'Loading message…' : (selectedBody || 'No preview available.')}</div>
                 </div>
 
                 <div style={composer}>
