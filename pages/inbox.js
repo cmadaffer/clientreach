@@ -2,14 +2,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import useSWR from 'swr';
 
-// Safe fetcher
+// generic JSON fetcher with safe parsing
 const fetcher = async (url) => {
   const res = await fetch(url, { headers: { Accept: 'application/json' } });
   const text = await res.text();
   const ct = (res.headers.get('content-type') || '').toLowerCase();
   try {
-    if (ct.includes('application/json')) return JSON.parse(text);
-    return { error: `Non-JSON from ${url}`, status: res.status, body: text.slice(0, 300) };
+    return ct.includes('application/json') ? JSON.parse(text) : { error: `Non-JSON from ${url}`, status: res.status, body: text.slice(0, 300) };
   } catch (e) {
     return { error: `Parse error from ${url}: ${e.message}`, status: res.status, body: text.slice(0, 300) };
   }
@@ -19,7 +18,7 @@ export default function InboxPage() {
   const [page, setPage] = useState(1);
   const pageSize = 25;
 
-  // 🔒 NO auto-refresh — only manual
+  // manual load only — no auto refresh
   const { data, error, mutate, isValidating } = useSWR(
     `/api/inbox-data?page=${page}&pageSize=${pageSize}`,
     fetcher,
@@ -31,7 +30,7 @@ export default function InboxPage() {
   const [syncing, setSyncing] = useState(false);
   const [syncError, setSyncError] = useState('');
 
-  // Reply state
+  // compose state
   const [to, setTo] = useState('');
   const [subj, setSubj] = useState('');
   const [body, setBody] = useState('');
@@ -39,29 +38,28 @@ export default function InboxPage() {
   const [sendErr, setSendErr] = useState('');
   const [sendOk, setSendOk] = useState('');
 
-  // Smart Reply
+  // smart reply state
   const [generating, setGenerating] = useState(false);
 
-  // Filters
+  // filters
   const [q, setQ] = useState('');
-  const [dir, setDir] = useState('all');
-  const [days, setDays] = useState('all');
+  const [dir, setDir] = useState('all');   // all | inbound | outbound
+  const [days, setDays] = useState('all'); // all | 7 | 30
 
   const apiError = data && data.error ? String(data.error) : null;
   const messagesRaw = Array.isArray(data?.messages) ? data.messages : [];
 
-  // De-dupe
+  // de-dupe rows
   const deduped = useMemo(() => {
     const map = new Map();
     for (const m of messagesRaw) {
-      const k =
-        (m && (m.msg_id || `${m.from_addr || ''}|${m.subject || ''}|${m.created_at || ''}`)) ||
-        Math.random().toString(36);
+      const k = (m?.msg_id) || `${m?.from_addr || ''}|${m?.subject || ''}|${m?.created_at || ''}`;
       if (!map.has(k)) map.set(k, m);
     }
     return Array.from(map.values());
   }, [messagesRaw]);
 
+  // apply filters
   const filtered = useMemo(() => {
     const qNorm = (q || '').trim().toLowerCase();
     const cutoff = days === 'all' ? null : new Date(Date.now() - Number(days) * 24 * 60 * 60 * 1000);
@@ -85,18 +83,21 @@ export default function InboxPage() {
   const end = start + pageSize;
   const pageRows = filtered.slice(start, end);
 
+  // pick first message on page
   useEffect(() => {
     if (!selected && pageRows.length) setSelected(pageRows[0]);
   }, [pageRows, selected]);
 
-  // Load body for selected
+  // load full body for selected (if needed)
   useEffect(() => {
     const m = selected;
     if (!m) return;
 
     setTo(m.from_addr || '');
     setSubj(m.subject ? (m.subject.toLowerCase().startsWith('re:') ? m.subject : `Re: ${m.subject}`) : 'Re:');
-    setBody(`\n\n--- On ${m.created_at ? new Date(m.created_at).toLocaleString() : ''}, ${m.from_addr || ''} wrote:\n${(m.body || '').slice(0, 500)}`);
+    setBody(
+      `\n\n--- On ${m.created_at ? new Date(m.created_at).toLocaleString() : ''}, ${m.from_addr || ''} wrote:\n${(m.body || '').slice(0, 500)}`
+    );
 
     if (m.body && m.body.trim()) return;
 
@@ -130,7 +131,7 @@ export default function InboxPage() {
       const txt = await res.text();
       clearTimeout(timer);
       if (!res.ok) throw new Error(cleanError(txt) || `Sync failed (${res.status})`);
-      await mutate(); // manual refresh
+      await mutate(); // refresh list
     } catch (err) {
       setSyncError(err.name === 'AbortError' ? 'Sync timed out (20s)' : cleanError(err.message));
     } finally {
@@ -139,7 +140,7 @@ export default function InboxPage() {
   };
 
   const handleRefresh = async () => {
-    await mutate(); // manual refresh without hitting cron
+    await mutate();
   };
 
   const handleSend = async () => {
@@ -177,34 +178,34 @@ export default function InboxPage() {
   };
 
   const handleSmartReply = async () => {
-  if (!selected) return;
-  setGenerating(true);
-  setSendErr("");
-  setSendOk("");
-  try {
-    const res = await fetch("/api/gpt-email-reply", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        messageBody: (selected.body || "").trim(),   // can be empty; API handles it
-        subject: selected.subject || "",
-        sender: selected.from_addr || "",
-      }),
-    });
-    const json = await res.json();
-    if (!res.ok || !json?.reply) throw new Error(json?.error || "Failed to generate reply");
-    setBody(json.reply);
-    setSendOk("Draft generated ✔");
-    setTimeout(() => setSendOk(""), 2500);
-  } catch (e) {
-    setSendErr((e.message || "").slice(0, 200));
-    setTimeout(() => setSendErr(""), 5000);
-  } finally {
-    setGenerating(false);
-  }
-};
+    if (!selected) return;
+    setGenerating(true);
+    setSendErr('');
+    setSendOk('');
+    try {
+      const res = await fetch('/api/gpt-email-reply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messageBody: (selected.body || '').trim(), // may be empty; API handles it
+          subject: selected.subject || '',
+          sender: selected.from_addr || '',
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json?.reply) throw new Error(json?.error || 'Failed to generate reply');
+      setBody(json.reply);
+      setSendOk('Draft generated ✔');
+      setTimeout(() => setSendOk(''), 2500);
+    } catch (e) {
+      setSendErr(cleanError(e.message));
+      setTimeout(() => setSendErr(''), 5000);
+    } finally {
+      setGenerating(false);
+    }
+  };
 
-  // Guards
+  // guards
   if (error) return <p style={center}>Failed to load: {String(error.message || error)}</p>;
   if (apiError) return <p style={center}>API error: {cleanError(apiError)}</p>;
   if (!data) return <p style={center}>Loading…</p>;
@@ -265,7 +266,9 @@ export default function InboxPage() {
                   <div style={from}>{m?.from_addr || '—'}</div>
                   <div style={badgesRow}>
                     {isImportant && <span style={badgeImportant}>🚨 Important</span>}
-                    <span style={badge(m?.direction || 'inbound')}>{(m?.direction || 'inbound') === 'outbound' ? 'Sent' : 'Inbox'}</span>
+                    <span style={badge(m?.direction || 'inbound')}>
+                      {(m?.direction || 'inbound') === 'outbound' ? 'Sent' : 'Inbox'}
+                    </span>
                   </div>
                 </div>
                 <div style={subject}>{m?.subject || '(no subject)'}</div>
@@ -288,7 +291,9 @@ export default function InboxPage() {
                 <strong>When:</strong>&nbsp;{selectedMsg.created_at ? new Date(selectedMsg.created_at).toLocaleString() : '—'}
                 <span style={dot} />
                 {selectedMsg.important && <span style={badgeImportant}>🚨 Important</span>}
-                <span style={badge(selectedMsg.direction || 'inbound')}>{(selectedMsg.direction || 'inbound') === 'outbound' ? 'Sent' : 'Inbox'}</span>
+                <span style={badge(selectedMsg.direction || 'inbound')}>
+                  {(selectedMsg.direction || 'inbound') === 'outbound' ? 'Sent' : 'Inbox'}
+                </span>
               </div>
 
               <div style={twoCols}>
@@ -301,10 +306,18 @@ export default function InboxPage() {
                   <div style={fieldRow}><label style={label}>Subject</label><input style={input} value={subj} onChange={(e) => setSubj(e.target.value)} /></div>
                   <textarea style={textarea} rows={12} value={body} onChange={(e) => setBody(e.target.value)} placeholder="Type your reply…" />
                   <div style={composeActions}>
-                    <button onClick={handleSmartReply} disabled={generating || !selectedMsg || loadingBody} ...>
+                    <button
+                      onClick={handleSmartReply}
+                      disabled={generating || !selectedMsg || loadingBody}
+                      style={btnSecondary}
+                    >
                       {generating ? 'Thinking…' : '💡 Smart Reply'}
                     </button>
-                    <button onClick={handleSend} disabled={sending || !to || !subj || !body} style={btnPrimary}>
+                    <button
+                      onClick={handleSend}
+                      disabled={sending || !to || !subj || !body}
+                      style={btnPrimary}
+                    >
                       {sending ? 'Sending…' : 'Send'}
                     </button>
                     {sendOk && <span style={okText}>{sendOk}</span>}
