@@ -301,7 +301,7 @@ export default function InboxPage() {
                   <div style={fieldRow}><label style={label}>Subject</label><input style={input} value={subj} onChange={(e) => setSubj(e.target.value)} /></div>
                   <textarea style={textarea} rows={12} value={body} onChange={(e) => setBody(e.target.value)} placeholder="Type your reply…" />
                   <div style={composeActions}>
-                    <button onClick={handleSmartReply} disabled={generating || !selectedMsg} style={btnSecondary}>
+                    <button onClick={handleSmartReply} disabled={generating || !selectedMsg || loadingBody} ...>
                       {generating ? 'Thinking…' : '💡 Smart Reply'}
                     </button>
                     <button onClick={handleSend} disabled={sending || !to || !subj || !body} style={btnPrimary}>
