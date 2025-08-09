@@ -2,11 +2,27 @@
 import { ImapFlow } from 'imapflow';
 import { supabase } from '../../../lib/supabaseClient';
 
+// Simple in-memory throttle so clicks don't spam the IMAP server
+const LAST_RUN_KEY = Symbol.for('clientreach_last_sync');
+const BUSY_KEY = Symbol.for('clientreach_sync_busy');
+
 export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
   // Pull up to N newest messages per click (fast)
   const limit = Math.min(parseInt(req.query.limit, 10) || 20, 100);
+
+  const throttleMs = Number(process.env.SYNC_THROTTLE_MS || 15000); // 15s default
+  const now = Date.now();
+  const last = global[LAST_RUN_KEY] || 0;
+  if (global[BUSY_KEY]) {
+    return res.status(202).json({ status: 'busy' });
+  }
+  if (now - last < throttleMs) {
+    return res.status(202).json({ status: 'throttled', waitMs: throttleMs - (now - last) });
+  }
+  global[BUSY_KEY] = true;
+  global[LAST_RUN_KEY] = now;
 
   // 1) Find newest message stored; back off 1 hour as cushion
   let sinceDate = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000); // fallback: last 3 days
@@ -28,6 +44,7 @@ export default async function handler(req, res) {
     port: Number(process.env.IMAP_PORT) || 993,
     secure: true,
     auth: { user: process.env.IMAP_USER, pass: process.env.IMAP_PASS },
+    logger: false, // 🔇 silence extremely verbose IMAP logs
   });
 
   let lock;
@@ -55,6 +72,13 @@ export default async function handler(req, res) {
       const subject    = env.subject || '';
       const created_at = env.date ? new Date(env.date) : new Date();
 
+      // Skip obvious bot loops / self-sends
+      const fromLc = (from_addr || '').toLowerCase();
+      const imapUserLc = (process.env.IMAP_USER || '').toLowerCase();
+      if (!from_addr || fromLc.includes('no-reply') || (imapUserLc && fromLc === imapUserLc)) {
+        continue;
+      }
+
       // 4) UPSERT ONLY columns that exist in your table
       const { error: upsertErr } = await supabase
         .from('inbox_messages')
@@ -70,7 +94,9 @@ export default async function handler(req, res) {
           { onConflict: 'msg_id' }
         );
 
-      if (!upsertErr) fetched++;
+      if (!upsertErr) {
+        fetched++;
+      }
     }
 
     return res.status(200).json({
@@ -85,5 +111,7 @@ export default async function handler(req, res) {
   } finally {
     try { if (lock) lock.release(); } catch {}
     try { await client.logout(); } catch {}
+    global[BUSY_KEY] = false;
+    global[LAST_RUN_KEY] = Date.now();
   }
 }
