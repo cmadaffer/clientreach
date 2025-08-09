@@ -177,32 +177,32 @@ export default function InboxPage() {
   };
 
   const handleSmartReply = async () => {
-    if (!selected) return;
-    setGenerating(true);
-    setSendErr('');
-    setSendOk('');
-    try {
-      const res = await fetch('/api/gpt-email-reply', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messageBody: selected.body || '',
-          subject: selected.subject || '',
-          sender: selected.from_addr || '',
-        }),
-      });
-      const json = await res.json();
-      if (!res.ok || !json?.reply) throw new Error(json?.error || 'Failed to generate reply');
-      setBody(json.reply);
-      setSendOk('Draft generated ✔');
-      setTimeout(() => setSendOk(''), 2500);
-    } catch (e) {
-      setSendErr(cleanError(e.message));
-      setTimeout(() => setSendErr(''), 5000);
-    } finally {
-      setGenerating(false);
-    }
-  };
+  if (!selected) return;
+  setGenerating(true);
+  setSendErr("");
+  setSendOk("");
+  try {
+    const res = await fetch("/api/gpt-email-reply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messageBody: (selected.body || "").trim(),   // can be empty; API handles it
+        subject: selected.subject || "",
+        sender: selected.from_addr || "",
+      }),
+    });
+    const json = await res.json();
+    if (!res.ok || !json?.reply) throw new Error(json?.error || "Failed to generate reply");
+    setBody(json.reply);
+    setSendOk("Draft generated ✔");
+    setTimeout(() => setSendOk(""), 2500);
+  } catch (e) {
+    setSendErr((e.message || "").slice(0, 200));
+    setTimeout(() => setSendErr(""), 5000);
+  } finally {
+    setGenerating(false);
+  }
+};
 
   // Guards
   if (error) return <p style={center}>Failed to load: {String(error.message || error)}</p>;
