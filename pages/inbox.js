@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import useSWR from 'swr';
 
+// Safe JSON fetcher
 const fetcher = async (url) => {
   const res = await fetch(url, { headers: { Accept: 'application/json' } });
   const text = await res.text();
@@ -19,7 +20,7 @@ export default function InboxPage() {
   const pageSize = 25;
   const [page, setPage] = useState(1);
 
-  // NO auto-polling; manual only
+  // Manual fetch only — no auto-refresh
   const { data, error, mutate, isValidating } = useSWR(
     `/api/inbox-data?page=${page}&pageSize=${pageSize}`,
     fetcher,
@@ -29,16 +30,14 @@ export default function InboxPage() {
   const apiError = data?.error ? String(data.error) : null;
   const messagesRaw = Array.isArray(data?.messages) ? data.messages : [];
 
-  // ---------- Stable normalize/sort/dedup ----------
+  /* ---------- Normalize, sort (newest→oldest), and de-duplicate ---------- */
   const normalized = useMemo(() => {
     const rows = messagesRaw.map((m) => {
       const key = m?.msg_id || `${m?.from_addr || ''}|${m?.subject || ''}|${m?.created_at || ''}`;
       const ts = m?.created_at ? new Date(m.created_at).getTime() : 0;
       return { ...m, _key: key, _ts: Number.isFinite(ts) ? ts : 0 };
     });
-    // sort newest → oldest (stable)
-    rows.sort((a, b) => b._ts - a._ts);
-    // de-dupe by key (keep first/newest)
+    rows.sort((a, b) => b._ts - a._ts); // newest first
     const seen = new Set();
     const out = [];
     for (const r of rows) {
@@ -49,7 +48,7 @@ export default function InboxPage() {
     return out;
   }, [messagesRaw]);
 
-  // ---------- Filters ----------
+  /* ---------- Filters ---------- */
   const [q, setQ] = useState('');
   const [dir, setDir] = useState('all');   // all | inbound | outbound
   const [days, setDays] = useState('all'); // all | 7 | 30
@@ -67,28 +66,28 @@ export default function InboxPage() {
     });
   }, [normalized, dir, days, q]);
 
-  // ---------- Paging ----------
+  /* ---------- Paging ---------- */
   const total = filtered.length;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const start = (page - 1) * pageSize;
   const end = start + pageSize;
   const pageRows = filtered.slice(start, end);
 
-  // ---------- Selection (by stable id) ----------
+  /* ---------- Selection (stable by _key) ---------- */
   const [selectedId, setSelectedId] = useState(null);
   const selectedMsg = useMemo(
     () => normalized.find((m) => m._key === selectedId) || null,
     [normalized, selectedId]
   );
 
-  // Only auto-select if NOTHING is selected yet
+  // Only auto-select the first visible message if nothing selected yet
   useEffect(() => {
     if (!selectedId && pageRows.length) {
       setSelectedId(pageRows[0]._key);
     }
   }, [pageRows, selectedId]);
 
-  // ---------- Message body cache (never replace selection object) ----------
+  /* ---------- Body cache (avoid replacing selected object) ---------- */
   const [bodyCache, setBodyCache] = useState({});
   const [loadingBody, setLoadingBody] = useState(false);
   const loadingKeyRef = useRef(null);
@@ -99,9 +98,9 @@ export default function InboxPage() {
 
     const cached = bodyCache[m._key];
     const hasBody = (m.body && m.body.trim().length > 0) || (cached && cached.trim().length > 0);
-    if (hasBody) return; // done
+    if (hasBody) return;
 
-    // prevent duplicate fetches if user clicks around
+    // prevent duplicate fetches if user clicks around quickly
     if (loadingKeyRef.current === m._key) return;
 
     loadingKeyRef.current = m._key;
@@ -127,7 +126,7 @@ export default function InboxPage() {
     ? (bodyCache[selectedMsg._key] || selectedMsg.body || '')
     : '';
 
-  // ---------- Composer state, driven by selected message ----------
+  /* ---------- Composer state mirrors selection ---------- */
   const [to, setTo] = useState('');
   const [subj, setSubj] = useState('');
   const [body, setBody] = useState('');
@@ -141,11 +140,12 @@ export default function InboxPage() {
     setBody(quoted);
   }, [selectedMsg, selectedBody]);
 
-  // ---------- Actions ----------
-  const [syncing, setSyncing] = useState(false);
-  const [syncError, setSyncError] = useState('');
+  /* ---------- Actions ---------- */
   const cleanError = (txt) =>
     (String(txt || '')).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200);
+
+  const [syncing, setSyncing] = useState(false);
+  const [syncError, setSyncError] = useState('');
 
   const handleSync = async () => {
     setSyncing(true);
@@ -157,7 +157,7 @@ export default function InboxPage() {
       const txt = await res.text();
       clearTimeout(timer);
       if (!res.ok) throw new Error(cleanError(txt) || `Sync failed (${res.status})`);
-      await mutate(); // refresh list
+      await mutate(); // refresh list manually
     } catch (err) {
       setSyncError(err.name === 'AbortError' ? 'Sync timed out (20s)' : cleanError(err.message));
     } finally {
@@ -218,15 +218,16 @@ export default function InboxPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          messageBody: (selectedBody || '').trim(), // can be empty; API handles it
+          messageBody: (selectedBody || '').trim(),          // can be empty; API handles it
           subject: selectedMsg.subject || '',
           sender: selectedMsg.from_addr || '',
+          msgId: selectedMsg.msg_id || selectedMsg._key,     // <-- pass msgId for caching
         }),
       });
       const json = await res.json();
       if (!res.ok || !json?.reply) throw new Error(json?.error || 'Failed to generate reply');
       setBody(json.reply);
-      setSendOk('Draft generated ✔');
+      setSendOk(json.cached ? 'Loaded cached draft ✔' : 'Draft generated ✔');
       setTimeout(() => setSendOk(''), 2500);
     } catch (e) {
       setSendErr(cleanError(e.message));
@@ -236,12 +237,12 @@ export default function InboxPage() {
     }
   };
 
-  // ---------- Guards ----------
+  /* ---------- Guards ---------- */
   if (error) return <p style={center}>Failed to load: {String(error.message || error)}</p>;
   if (apiError) return <p style={center}>API error: {cleanError(apiError)}</p>;
   if (!data) return <p style={center}>Loading…</p>;
 
-  // ---------- UI ----------
+  /* ---------- UI ---------- */
   return (
     <div style={wrap}>
       <div style={headerBar}>
